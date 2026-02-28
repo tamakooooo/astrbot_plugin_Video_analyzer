@@ -310,7 +310,7 @@ def _extract_title(html: str) -> tuple:
 def render_note_image(
     markdown_text: str,
     output_path: str,
-    width: int = 1400,
+    width: int = 1000,
 ) -> Optional[str]:
     try:
         import markdown as md
@@ -345,9 +345,9 @@ def render_note_image(
 
         options = {
             'format': 'png',
-            'width': '1400',
+            'width': str(width),
             'encoding': 'UTF-8',
-            'quality': '94',
+            'quality': '78',
             'enable-local-file-access': '',
             'no-stop-slow-scripts': '',
             'disable-smart-width': '',
