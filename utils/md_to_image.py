@@ -103,7 +103,13 @@ def _wrap_sections_in_cards(html: str) -> str:
     return '\n'.join(result)
 
 
-def _build_full_html(body_html: str, logo_uri: str, title_text: str = '', footer_time: str = '') -> str:
+def _build_full_html(
+    body_html: str,
+    logo_uri: str,
+    title_text: str = '',
+    footer_time: str = '',
+    page_width: int = 1400,
+) -> str:
     font_faces = _build_font_faces()
 
     return f'''<!DOCTYPE html>
@@ -115,7 +121,7 @@ body{{
   font-family:'Microsoft YaHei','PingFang SC','Noto Sans SC','Hiragino Sans GB',sans-serif;
   background:#1a1b2e;
   color:#c9cedc;
-  width:1400px;
+  width:{page_width}px;
   line-height:1.85;
   font-size:15px;
 }}
@@ -310,7 +316,7 @@ def _extract_title(html: str) -> tuple:
 def render_note_image(
     markdown_text: str,
     output_path: str,
-    width: int = 1000,
+    width: int = 1400,
 ) -> Optional[str]:
     try:
         import markdown as md
@@ -341,13 +347,19 @@ def render_note_image(
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         footer_time = f"{now_str}"
 
-        full_html = _build_full_html(html_body, logo_uri, title_text, footer_time)
+        full_html = _build_full_html(
+            html_body,
+            logo_uri,
+            title_text,
+            footer_time,
+            page_width=width,
+        )
 
         options = {
-            'format': 'png',
+            'format': 'jpg',
             'width': str(width),
             'encoding': 'UTF-8',
-            'quality': '78',
+            'quality': '82',
             'enable-local-file-access': '',
             'no-stop-slow-scripts': '',
             'disable-smart-width': '',

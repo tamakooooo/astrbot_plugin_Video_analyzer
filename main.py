@@ -7,6 +7,8 @@ BiliBrief 视频纪要插件
 import asyncio
 import os
 import uuid
+import json
+from pathlib import Path
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, StarTools
@@ -35,6 +37,7 @@ class BiliBriefPlugin(Star):
 
         # 读取配置
         self.config = self.context.get_config() or {}
+        self._merge_feishu_config_from_local_file_if_needed()
 
         # Debug 模式 —— 在其他所有初始化之前设置
         self._debug_mode = bool(self.config.get("debug_mode", False))
@@ -120,6 +123,51 @@ class BiliBriefPlugin(Star):
                 if uid and uid.isdigit():
                     origin = f"{prefix}:FriendMessage:{uid}"
                     self.subscription_mgr.add_push_target(origin, f"QQ{uid}")
+
+    def _merge_feishu_config_from_local_file_if_needed(self):
+        """
+        当运行时配置缺少飞书关键字段时，兜底从本地配置文件读取。
+        说明：部分环境中插件运行时配置与 data/config 文件可能短暂不同步。
+        """
+        required_keys = ("feishu_app_id", "feishu_app_secret", "feishu_wiki_space_id")
+        if all(str(self.config.get(k, "")).strip() for k in required_keys):
+            return
+
+        cfg_candidates = [
+            Path("/mnt/AstrBot/data/config/astrbot_plugin_bilibrief_config.json"),
+            Path("/mnt/AstrBot/data/config/astrbot_plugin_video_analyzer_config.json"),
+        ]
+        cfg_path = next((p for p in cfg_candidates if p.exists()), None)
+        if cfg_path is None:
+            return
+
+        try:
+            file_cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+        except Exception as e:
+            self._log(f"[ConfigFallback] 读取本地配置失败: {e}")
+            return
+
+        merged = False
+        fallback_keys = (
+            "enable_feishu_wiki_push",
+            "feishu_push_on_manual",
+            "feishu_push_on_auto",
+            "feishu_app_id",
+            "feishu_app_secret",
+            "feishu_wiki_space_id",
+            "feishu_parent_node_token",
+            "feishu_title_prefix",
+            "feishu_domain",
+        )
+        for key in fallback_keys:
+            cur = str(self.config.get(key, "")).strip() if key in self.config else ""
+            val = file_cfg.get(key)
+            if not cur and val not in (None, ""):
+                self.config[key] = val
+                merged = True
+
+        if merged:
+            self._log("[ConfigFallback] 已从本地配置文件补齐飞书配置")
 
     @staticmethod
     def _parse_list(text: str) -> set:
@@ -215,7 +263,7 @@ class BiliBriefPlugin(Star):
 
         # 生成唯一文件名
         import time
-        img_filename = f"note_{int(time.time() * 1000)}.png"
+        img_filename = f"note_{int(time.time() * 1000)}.jpg"
         img_path = os.path.join(self.data_dir, "images", img_filename)
 
         self._log(f"[Render] 开始渲染图片: {img_path}")
@@ -238,22 +286,32 @@ class BiliBriefPlugin(Star):
         """
         if not self.config.get("enable_feishu_wiki_push", True):
             self._log("[FeishuPush] 配置关闭，跳过")
-            return {"attempted": False, "reason": "disabled"}
+            result = {"attempted": False, "reason": "disabled"}
+            self._last_feishu_publish_result = result
+            return result
 
         if source == "manual" and not self.config.get("feishu_push_on_manual", True):
             self._log("[FeishuPush] manual 触发已关闭，跳过")
-            return {"attempted": False, "reason": "manual_disabled"}
+            result = {"attempted": False, "reason": "manual_disabled"}
+            self._last_feishu_publish_result = result
+            return result
         if source == "auto" and not self.config.get("feishu_push_on_auto", True):
             self._log("[FeishuPush] auto 触发已关闭，跳过")
-            return {"attempted": False, "reason": "auto_disabled"}
+            result = {"attempted": False, "reason": "auto_disabled"}
+            self._last_feishu_publish_result = result
+            return result
 
         if not note_text or str(note_text).strip().startswith("❌"):
             self._log("[FeishuPush] 总结为空或失败结果，跳过")
-            return {"attempted": False, "reason": "invalid_note"}
+            result = {"attempted": False, "reason": "invalid_note"}
+            self._last_feishu_publish_result = result
+            return result
 
         if not self.feishu_wiki_pusher.is_config_ready():
             self._log("[FeishuPush] 配置未就绪（app_id/app_secret/space_id），跳过")
-            return {"attempted": False, "reason": "config_not_ready"}
+            result = {"attempted": False, "reason": "config_not_ready"}
+            self._last_feishu_publish_result = result
+            return result
 
         ok, message, detail = await self.feishu_wiki_pusher.push_note(note_text=note_text, video_url=video_url)
         result = {
@@ -550,6 +608,8 @@ class BiliBriefPlugin(Star):
                     yield event.plain_result("📚 飞书发布成功")
             else:
                 yield event.plain_result(f"⚠️ 飞书发布失败：{feishu_result.get('message', '未知错误')}")
+        else:
+            yield event.plain_result(f"ℹ️ 飞书未发布：{feishu_result.get('reason', 'unknown')}")
 
     @filter.command("最新视频", alias={"latest"})
     async def latest_video_cmd(self, event: AstrMessageEvent):
@@ -605,6 +665,8 @@ class BiliBriefPlugin(Star):
             doc_url = (feishu_result.get("detail") or {}).get("doc_url", "")
             if doc_url:
                 yield event.plain_result(f"📚 飞书发布成功：{doc_url}")
+        elif not feishu_result.get("attempted"):
+            yield event.plain_result(f"ℹ️ 飞书未发布：{feishu_result.get('reason', 'unknown')}")
 
     @filter.command("订阅", alias={"subscribe", "关注UP"})
     async def subscribe_cmd(self, event: AstrMessageEvent):
