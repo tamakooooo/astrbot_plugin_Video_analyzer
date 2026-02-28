@@ -124,7 +124,7 @@ class FeishuWikiPusher:
                 },
             )
 
-        ok, block_id_relations = await self._append_blocks(
+        ok, block_id_relations, appended_image_block_ids = await self._append_blocks(
             token, doc_id, root_block_id, blocks
         )
         if not ok:
@@ -145,6 +145,7 @@ class FeishuWikiPusher:
             doc_id=doc_id,
             block_id_relations=block_id_relations,
             image_tasks=image_tasks,
+            appended_image_block_ids=appended_image_block_ids,
         )
 
         mindmap_result = await self._try_insert_mindmap_whiteboard(
@@ -284,13 +285,14 @@ class FeishuWikiPusher:
 
     async def _append_blocks(
         self, token: str, doc_id: str, parent_block_id: str, blocks: list[dict]
-    ) -> tuple[bool, dict[str, str]]:
+    ) -> tuple[bool, dict[str, str], list[str]]:
         headers = {"Authorization": f"Bearer {token}"}
         url = (
             f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks/"
             f"{parent_block_id}/children?document_revision_id=-1"
         )
         relations: dict[str, str] = {}
+        appended_image_block_ids: list[str] = []
 
         chunk_size = 30
         for i in range(0, len(blocks), chunk_size):
@@ -302,13 +304,13 @@ class FeishuWikiPusher:
                         data = await resp.json()
             except Exception as e:
                 logger.warning(f"[FeishuWiki] 追加块异常: {e}")
-                return False, relations
+                return False, relations, appended_image_block_ids
 
             if data.get("code") != 0:
                 logger.warning(
                     f"[FeishuWiki] 追加块失败: code={data.get('code')}, msg={data.get('msg')}"
                 )
-                return False, relations
+                return False, relations, appended_image_block_ids
 
             for item in (data.get("data") or {}).get("block_id_relations", []) or []:
                 temporary_id = item.get("temporary_block_id")
@@ -316,7 +318,11 @@ class FeishuWikiPusher:
                 if temporary_id and real_id:
                     relations[temporary_id] = real_id
 
-        return True, relations
+            for child in (data.get("data") or {}).get("children", []) or []:
+                if int(child.get("block_type") or 0) == 27 and child.get("block_id"):
+                    appended_image_block_ids.append(str(child["block_id"]))
+
+        return True, relations, appended_image_block_ids
 
     def _build_title(self, note_text: str, video_url: str) -> str:
         first_non_empty = ""
@@ -747,18 +753,23 @@ class FeishuWikiPusher:
         doc_id: str,
         block_id_relations: dict[str, str],
         image_tasks: dict[str, dict[str, str]],
+        appended_image_block_ids: list[str] | None = None,
     ) -> tuple[int, int]:
         if not image_tasks:
             return 0, 0
 
         ok_count = 0
         fail_count = 0
+        appended_image_block_ids = appended_image_block_ids or []
+        used_block_ids: set[str] = set()
+        unresolved: list[tuple[str, dict[str, str]]] = []
+
         for temp_id, task in image_tasks.items():
             block_id = block_id_relations.get(temp_id)
             if not block_id:
-                logger.warning(f"[FeishuWiki] 图片块映射缺失: {temp_id}")
-                fail_count += 1
+                unresolved.append((temp_id, task))
                 continue
+            used_block_ids.add(block_id)
             try:
                 task_type = str((task or {}).get("type") or "url")
                 task_value = str((task or {}).get("value") or "").strip()
@@ -786,6 +797,41 @@ class FeishuWikiPusher:
                     fail_count += 1
             except Exception as e:
                 logger.warning(f"[FeishuWiki] 绑定图片失败: {e}")
+                fail_count += 1
+
+        fallback_block_ids = [bid for bid in appended_image_block_ids if bid not in used_block_ids]
+        for (temp_id, task), block_id in zip(unresolved, fallback_block_ids):
+            try:
+                task_type = str((task or {}).get("type") or "url")
+                task_value = str((task or {}).get("value") or "").strip()
+                if not task_value:
+                    fail_count += 1
+                    continue
+                if task_type == "local":
+                    file_token = await self._upload_image_media_from_local(
+                        token, task_value, block_id
+                    )
+                else:
+                    file_token = await self._upload_image_media_from_url(
+                        token, task_value, block_id
+                    )
+                if not file_token:
+                    fail_count += 1
+                    continue
+                replaced = await self._replace_image_block(
+                    token, doc_id, block_id, file_token
+                )
+                if replaced:
+                    ok_count += 1
+                else:
+                    fail_count += 1
+            except Exception as e:
+                logger.warning(f"[FeishuWiki] 回退绑定图片失败: {temp_id}, err={e}")
+                fail_count += 1
+
+        if len(unresolved) > len(fallback_block_ids):
+            for temp_id, _ in unresolved[len(fallback_block_ids) :]:
+                logger.warning(f"[FeishuWiki] 图片块映射缺失: {temp_id}")
                 fail_count += 1
 
         return ok_count, fail_count
@@ -919,10 +965,7 @@ class FeishuWikiPusher:
             "children": [
                 {
                     "block_type": 43,
-                    "whiteboard": {
-                        "elements": [],
-                        "style": {"align": align},
-                    },
+                    "board": {"align": align},
                 }
             ]
         }

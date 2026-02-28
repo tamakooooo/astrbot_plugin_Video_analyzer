@@ -95,9 +95,8 @@ class BilibiliDownloader(Downloader):
         output_path = os.path.join(output_dir, "%(id)s_video.%(ext)s")
 
         ydl_opts = {
-            "format": "best[ext=mp4]/best",
+            "format": "bestvideo*+bestaudio/best",
             "outtmpl": output_path,
-            "merge_output_format": "mp4",
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
