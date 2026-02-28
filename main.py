@@ -5,23 +5,23 @@ BiliBrief 视频纪要插件
 """
 
 import asyncio
+import json
 import os
 import uuid
-import json
 from pathlib import Path
 
-from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, StarTools
-from astrbot.api.message_components import Plain, Image
 from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.message_components import Image, Plain
+from astrbot.api.star import Context, Star, StarTools
 
-from .services.subscription import SubscriptionManager
-from .services.bilibili_api import get_up_info, get_latest_videos, search_up_by_name
+from .services.bilibili_api import get_latest_videos, get_up_info, search_up_by_name
 from .services.bilibili_login import BilibiliLogin
-from .services.note_service import NoteService
 from .services.feishu_wiki import FeishuWikiPusher
-from .utils.url_parser import detect_platform, extract_bilibili_mid
+from .services.note_service import NoteService
+from .services.subscription import SubscriptionManager
 from .utils.md_to_image import render_note_image
+from .utils.url_parser import detect_platform, extract_bilibili_mid
 
 
 class BiliBriefPlugin(Star):
@@ -45,18 +45,20 @@ class BiliBriefPlugin(Star):
             logger.info("═══════════ [BiliBrief] Debug 模式已启用 ═══════════")
 
         self._log("══════ [BiliBrief] 插件初始化开始 ══════")
-        self._log(f"配置内容: { {k: v for k, v in self.config.items() if k not in ('cookies',)} }")
+        self._log(
+            f"配置内容: { {k: v for k, v in self.config.items() if k not in ('cookies',)} }"
+        )
 
         # B站扫码登录服务
         self.bili_login = BilibiliLogin(self.data_dir)
         self.bili_cookies = self.bili_login.get_cookies()
-        self._log(f"Cookie 状态: {'已加载, keys=' + str(list(self.bili_cookies.keys())) if self.bili_cookies else '无'}")
+        self._log(
+            f"Cookie 状态: {'已加载, keys=' + str(list(self.bili_cookies.keys())) if self.bili_cookies else '无'}"
+        )
 
         # 解析群聊访问控制
         self.access_mode = self.config.get("access_mode", "blacklist")
-        self.group_list = self._parse_list(
-            str(self.config.get("group_list", ""))
-        )
+        self.group_list = self._parse_list(str(self.config.get("group_list", "")))
         self._log(f"访问控制: mode={self.access_mode}, group_list={self.group_list}")
 
         # 初始化服务
@@ -74,6 +76,7 @@ class BiliBriefPlugin(Star):
             domain=str(self.config.get("feishu_domain", "feishu")),
         )
         self._last_feishu_publish_result = {}
+        self._last_note_artifacts = {}
 
         # 从配置加载推送目标（与命令添加的合并，不重复）
         self._load_push_targets_from_config()
@@ -174,15 +177,17 @@ class BiliBriefPlugin(Star):
         """解析逗号分隔的列表为 set"""
         if not text or not text.strip():
             return set()
-        return {item.strip() for item in text.split(',') if item.strip()}
+        return {item.strip() for item in text.split(",") if item.strip()}
 
     def _check_access(self, event: AstrMessageEvent) -> bool:
         """检查群是否有权使用插件（仅群维度，不看个人）"""
         try:
-            origin = getattr(event, 'unified_msg_origin', '') or ''
-            self._log(f"[AccessCheck] mode={self.access_mode}, origin={origin}, group_list={self.group_list}")
+            origin = getattr(event, "unified_msg_origin", "") or ""
+            self._log(
+                f"[AccessCheck] mode={self.access_mode}, origin={origin}, group_list={self.group_list}"
+            )
 
-            if self.access_mode == 'all':
+            if self.access_mode == "all":
                 self._log("[AccessCheck] 模式=all, 放行")
                 return True
 
@@ -190,17 +195,17 @@ class BiliBriefPlugin(Star):
                 self._log("[AccessCheck] group_list 为空, 放行")
                 return True
 
-            if self.access_mode == 'whitelist':
+            if self.access_mode == "whitelist":
                 for gid in self.group_list:
-                    if f':{gid}' in origin or origin.endswith(gid):
+                    if f":{gid}" in origin or origin.endswith(gid):
                         self._log(f"[AccessCheck] 白名单命中: {gid}")
                         return True
                 self._log("[AccessCheck] 白名单未命中, 拒绝")
                 return False
 
-            elif self.access_mode == 'blacklist':
+            elif self.access_mode == "blacklist":
                 for gid in self.group_list:
-                    if f':{gid}' in origin or origin.endswith(gid):
+                    if f":{gid}" in origin or origin.endswith(gid):
                         self._log(f"[AccessCheck] 黑名单命中: {gid}, 拒绝")
                         return False
                 self._log("[AccessCheck] 黑名单未命中, 放行")
@@ -238,8 +243,7 @@ class BiliBriefPlugin(Star):
 
         # 直接链接（B站长链 / b23短链）
         direct = re.search(
-            r"https?://(?:www\.)?(?:bilibili\.com/video/[^\s)>]+|b23\.tv/[^\s)>]+)",
-            raw
+            r"https?://(?:www\.)?(?:bilibili\.com/video/[^\s)>]+|b23\.tv/[^\s)>]+)", raw
         )
         if direct:
             return direct.group(0).strip()
@@ -263,6 +267,7 @@ class BiliBriefPlugin(Star):
 
         # 生成唯一文件名
         import time
+
         img_filename = f"note_{int(time.time() * 1000)}.jpg"
         img_path = os.path.join(self.data_dir, "images", img_filename)
 
@@ -276,7 +281,13 @@ class BiliBriefPlugin(Star):
             self._log("[Render] 图片渲染失败, 回退到纯文本")
             return note_text or "❌ 总结为空"
 
-    async def _try_push_note_to_feishu(self, note_text: str, video_url: str, source: str):
+    async def _try_push_note_to_feishu(
+        self,
+        note_text: str,
+        video_url: str,
+        source: str,
+        artifacts: dict = None,
+    ):
         """
         尝试推送总结到飞书知识库（软失败，不影响主流程）
 
@@ -313,7 +324,13 @@ class BiliBriefPlugin(Star):
             self._last_feishu_publish_result = result
             return result
 
-        ok, message, detail = await self.feishu_wiki_pusher.push_note(note_text=note_text, video_url=video_url)
+        artifacts = artifacts or {}
+        ok, message, detail = await self.feishu_wiki_pusher.push_note(
+            note_text=note_text,
+            video_url=video_url,
+            screenshot_paths=artifacts.get("screenshot_paths") or [],
+            mindmap_mermaid=str(artifacts.get("mindmap_mermaid", "") or ""),
+        )
         result = {
             "attempted": True,
             "success": ok,
@@ -378,7 +395,9 @@ class BiliBriefPlugin(Star):
         )
         yield event.plain_result(help_text)
 
-    @filter.command("B站登录", alias={"bili_login", "哔哩登录", "B站扫码登录", "扫码登录"})
+    @filter.command(
+        "B站登录", alias={"bili_login", "哔哩登录", "B站扫码登录", "扫码登录"}
+    )
     async def bili_login_cmd(self, event: AstrMessageEvent):
         """B站扫码登录"""
         if not self._check_access(event):
@@ -409,7 +428,9 @@ class BiliBriefPlugin(Star):
             try:
                 import segno
             except ImportError:
-                yield event.plain_result("❌ 缺少 segno 依赖，请运行: pip install segno")
+                yield event.plain_result(
+                    "❌ 缺少 segno 依赖，请运行: pip install segno"
+                )
                 return
 
             qr_filename = f"login_qr_{uuid.uuid4().hex[:8]}.png"
@@ -480,6 +501,7 @@ class BiliBriefPlugin(Star):
 
         # 从消息中提取 URL
         import re
+
         raw_msg = event.message_str or ""
         self._log(f"[总结命令] event.message_str = '{raw_msg}'")
         self._log(f"[总结命令] event.message_str type = {type(raw_msg)}")
@@ -488,15 +510,19 @@ class BiliBriefPlugin(Star):
         # 也尝试从 message_obj 中获取完整消息
         full_text = raw_msg
         try:
-            if hasattr(event, 'message_obj') and event.message_obj:
+            if hasattr(event, "message_obj") and event.message_obj:
                 chain = event.message_obj.message
-                self._log(f"[总结命令] message_obj.message 链长度 = {len(chain) if chain else 0}")
+                self._log(
+                    f"[总结命令] message_obj.message 链长度 = {len(chain) if chain else 0}"
+                )
                 for i, comp in enumerate(chain or []):
-                    self._log(f"[总结命令] 消息组件[{i}]: type={type(comp).__name__}, str={str(comp)[:200]}")
+                    self._log(
+                        f"[总结命令] 消息组件[{i}]: type={type(comp).__name__}, str={str(comp)[:200]}"
+                    )
                 # 拼接所有 Plain 文本
                 plain_texts = []
-                for comp in (chain or []):
-                    if hasattr(comp, 'text'):
+                for comp in chain or []:
+                    if hasattr(comp, "text"):
                         plain_texts.append(comp.text)
                     elif isinstance(comp, str):
                         plain_texts.append(comp)
@@ -523,8 +549,7 @@ class BiliBriefPlugin(Star):
         # 方式2: 用正则从 raw_msg 中找 bilibili URL
         if not video_url:
             url_match = re.search(
-                r'https?://(?:www\.)?bilibili\.com/video/[A-Za-z0-9/?=&_.]+',
-                raw_msg
+                r"https?://(?:www\.)?bilibili\.com/video/[A-Za-z0-9/?=&_.]+", raw_msg
             )
             if url_match:
                 video_url = url_match.group(0)
@@ -535,8 +560,7 @@ class BiliBriefPlugin(Star):
         # 方式3: 从 full_text (message_obj) 中找
         if not video_url and full_text != raw_msg:
             url_match = re.search(
-                r'https?://(?:www\.)?bilibili\.com/video/[A-Za-z0-9/?=&_.]+',
-                full_text
+                r"https?://(?:www\.)?bilibili\.com/video/[A-Za-z0-9/?=&_.]+", full_text
             )
             if url_match:
                 video_url = url_match.group(0)
@@ -547,7 +571,7 @@ class BiliBriefPlugin(Star):
         # 方式4: 找 b23.tv 短链
         if not video_url:
             for text_src in [raw_msg, full_text]:
-                short_match = re.search(r'https?://b23\.tv/\S+', text_src)
+                short_match = re.search(r"https?://b23\.tv/\S+", text_src)
                 if short_match:
                     video_url = short_match.group(0)
                     self._log(f"[总结命令] 方式4 短链匹配: '{video_url}'")
@@ -557,7 +581,7 @@ class BiliBriefPlugin(Star):
 
         # 方式5: 尝试从整条消息中找 BV 号
         if not video_url:
-            bv_match = re.search(r'(BV[0-9A-Za-z]{10})', raw_msg + " " + full_text)
+            bv_match = re.search(r"(BV[0-9A-Za-z]{10})", raw_msg + " " + full_text)
             if bv_match:
                 video_url = f"https://www.bilibili.com/video/{bv_match.group(1)}"
                 self._log(f"[总结命令] 方式5 从BV号构建URL: '{video_url}'")
@@ -573,7 +597,7 @@ class BiliBriefPlugin(Star):
             )
             return
 
-        video_url = self._extract_clean_bilibili_url(video_url).rstrip('>')
+        video_url = self._extract_clean_bilibili_url(video_url).rstrip(">")
         platform = detect_platform(video_url)
         self._log(f"[总结命令] 最终URL='{video_url}', platform='{platform}'")
         if platform != "bilibili":
@@ -584,20 +608,26 @@ class BiliBriefPlugin(Star):
         yield event.plain_result("⏳ 正在生成总结，请稍候（可能需要1-3分钟）...")
 
         self._log(f"[总结命令] 调用 _generate_note: {video_url}")
-        note = await self._generate_note(video_url)
+        note, artifacts = await self._generate_note(video_url)
         if not isinstance(note, str) or not note.strip():
             note = "❌ 总结生成结果为空"
         self._log(f"[总结命令] 总结生成完成, 长度={len(note) if note else 0}")
-        feishu_result = await self._try_push_note_to_feishu(note, video_url, source="manual")
+        feishu_result = await self._try_push_note_to_feishu(
+            note, video_url, source="manual", artifacts=artifacts
+        )
 
         # 发送总结（图片或文本）
         result = self._render_and_get_chain(note)
-        self._log(f"[总结命令] 输出模式: {'图片' if isinstance(result, list) else '文本'}")
+        self._log(
+            f"[总结命令] 输出模式: {'图片' if isinstance(result, list) else '文本'}"
+        )
         self._log("═══════ [总结命令] 结束(成功) ═══════")
         if isinstance(result, list):
             yield event.chain_result(result)
         else:
-            safe_text = result if isinstance(result, str) and result else "❌ 总结发送内容为空"
+            safe_text = (
+                result if isinstance(result, str) and result else "❌ 总结发送内容为空"
+            )
             yield event.plain_result(safe_text)
         if feishu_result.get("attempted"):
             if feishu_result.get("success"):
@@ -607,9 +637,13 @@ class BiliBriefPlugin(Star):
                 else:
                     yield event.plain_result("📚 飞书发布成功")
             else:
-                yield event.plain_result(f"⚠️ 飞书发布失败：{feishu_result.get('message', '未知错误')}")
+                yield event.plain_result(
+                    f"⚠️ 飞书发布失败：{feishu_result.get('message', '未知错误')}"
+                )
         else:
-            yield event.plain_result(f"ℹ️ 飞书未发布：{feishu_result.get('reason', 'unknown')}")
+            yield event.plain_result(
+                f"ℹ️ 飞书未发布：{feishu_result.get('reason', 'unknown')}"
+            )
 
     @filter.command("最新视频", alias={"latest"})
     async def latest_video_cmd(self, event: AstrMessageEvent):
@@ -619,7 +653,9 @@ class BiliBriefPlugin(Star):
             return
         args = self._parse_args(event.message_str)
         if not args:
-            yield event.plain_result("❌ 请提供UP主UID、空间链接或昵称\n用法: /最新视频 <UP主UID或昵称>")
+            yield event.plain_result(
+                "❌ 请提供UP主UID、空间链接或昵称\n用法: /最新视频 <UP主UID或昵称>"
+            )
             return
 
         mid = extract_bilibili_mid(args)
@@ -629,11 +665,12 @@ class BiliBriefPlugin(Star):
             search_result = await search_up_by_name(args, cookies=self.bili_cookies)
             if search_result:
                 mid = search_result["mid"]
-                yield event.plain_result(f"✅ 找到UP主【{search_result['name']}】(UID:{mid})")
+                yield event.plain_result(
+                    f"✅ 找到UP主【{search_result['name']}】(UID:{mid})"
+                )
             else:
                 yield event.plain_result(
-                    "❌ 无法识别UP主\n"
-                    "支持: 纯数字UID、空间链接、或UP主昵称"
+                    "❌ 无法识别UP主\n支持: 纯数字UID、空间链接、或UP主昵称"
                 )
                 return
 
@@ -651,22 +688,28 @@ class BiliBriefPlugin(Star):
             f"📺 找到最新视频: {video['title']}\n⏳ 正在生成总结..."
         )
 
-        note = await self._generate_note(video_url)
+        note, artifacts = await self._generate_note(video_url)
         if not isinstance(note, str) or not note.strip():
             note = "❌ 总结生成结果为空"
-        feishu_result = await self._try_push_note_to_feishu(note, video_url, source="manual")
+        feishu_result = await self._try_push_note_to_feishu(
+            note, video_url, source="manual", artifacts=artifacts
+        )
         result = self._render_and_get_chain(note)
         if isinstance(result, list):
             yield event.chain_result(result)
         else:
-            safe_text = result if isinstance(result, str) and result else "❌ 总结发送内容为空"
+            safe_text = (
+                result if isinstance(result, str) and result else "❌ 总结发送内容为空"
+            )
             yield event.plain_result(safe_text)
         if feishu_result.get("attempted") and feishu_result.get("success"):
             doc_url = (feishu_result.get("detail") or {}).get("doc_url", "")
             if doc_url:
                 yield event.plain_result(f"📚 飞书发布成功：{doc_url}")
         elif not feishu_result.get("attempted"):
-            yield event.plain_result(f"ℹ️ 飞书未发布：{feishu_result.get('reason', 'unknown')}")
+            yield event.plain_result(
+                f"ℹ️ 飞书未发布：{feishu_result.get('reason', 'unknown')}"
+            )
 
     @filter.command("订阅", alias={"subscribe", "关注UP"})
     async def subscribe_cmd(self, event: AstrMessageEvent):
@@ -676,7 +719,9 @@ class BiliBriefPlugin(Star):
             return
         args = self._parse_args(event.message_str)
         if not args:
-            yield event.plain_result("❌ 请提供UP主UID、空间链接或昵称\n用法: /订阅 <UP主UID或昵称>")
+            yield event.plain_result(
+                "❌ 请提供UP主UID、空间链接或昵称\n用法: /订阅 <UP主UID或昵称>"
+            )
             return
 
         mid = extract_bilibili_mid(args)
@@ -686,11 +731,12 @@ class BiliBriefPlugin(Star):
             search_result = await search_up_by_name(args, cookies=self.bili_cookies)
             if search_result:
                 mid = search_result["mid"]
-                yield event.plain_result(f"✅ 找到UP主【{search_result['name']}】(UID:{mid})")
+                yield event.plain_result(
+                    f"✅ 找到UP主【{search_result['name']}】(UID:{mid})"
+                )
             else:
                 yield event.plain_result(
-                    "❌ 无法识别UP主\n"
-                    "支持: 纯数字UID、空间链接、或UP主昵称"
+                    "❌ 无法识别UP主\n支持: 纯数字UID、空间链接、或UP主昵称"
                 )
                 return
 
@@ -705,7 +751,9 @@ class BiliBriefPlugin(Star):
         # 获取 UP主 信息
         up_info = await get_up_info(mid, cookies=self.bili_cookies)
         if not up_info:
-            yield event.plain_result(f"❌ 无法获取UP主信息 (UID:{mid})，请检查UID是否正确")
+            yield event.plain_result(
+                f"❌ 无法获取UP主信息 (UID:{mid})，请检查UID是否正确"
+            )
             return
 
         name = up_info["name"]
@@ -719,8 +767,7 @@ class BiliBriefPlugin(Star):
                 self.subscription_mgr.update_last_video(origin, mid, videos[0]["bvid"])
 
             yield event.plain_result(
-                f"✅ 已订阅 UP主【{name}】(UID:{mid})\n"
-                f"有新视频时将自动推送总结"
+                f"✅ 已订阅 UP主【{name}】(UID:{mid})\n有新视频时将自动推送总结"
             )
         else:
             yield event.plain_result(f"⚠️ 已经订阅了 UP主【{name}】(UID:{mid})")
@@ -733,7 +780,9 @@ class BiliBriefPlugin(Star):
             return
         args = self._parse_args(event.message_str)
         if not args:
-            yield event.plain_result("❌ 请提供UP主UID、空间链接或昵称\n用法: /取消订阅 <UP主UID或昵称>")
+            yield event.plain_result(
+                "❌ 请提供UP主UID、空间链接或昵称\n用法: /取消订阅 <UP主UID或昵称>"
+            )
             return
 
         mid = extract_bilibili_mid(args)
@@ -743,11 +792,12 @@ class BiliBriefPlugin(Star):
             search_result = await search_up_by_name(args, cookies=self.bili_cookies)
             if search_result:
                 mid = search_result["mid"]
-                yield event.plain_result(f"✅ 找到UP主【{search_result['name']}】(UID:{mid})")
+                yield event.plain_result(
+                    f"✅ 找到UP主【{search_result['name']}】(UID:{mid})"
+                )
             else:
                 yield event.plain_result(
-                    "❌ 无法识别UP主\n"
-                    "支持: 纯数字UID、空间链接、或UP主昵称"
+                    "❌ 无法识别UP主\n支持: 纯数字UID、空间链接、或UP主昵称"
                 )
                 return
 
@@ -766,7 +816,9 @@ class BiliBriefPlugin(Star):
         subs = self.subscription_mgr.get_subscriptions(origin)
 
         if not subs:
-            yield event.plain_result("📋 当前没有订阅任何UP主\n使用 /订阅 <UID或昵称> 添加订阅")
+            yield event.plain_result(
+                "📋 当前没有订阅任何UP主\n使用 /订阅 <UID或昵称> 添加订阅"
+            )
             return
 
         lines = ["📋 当前订阅列表:"]
@@ -792,8 +844,7 @@ class BiliBriefPlugin(Star):
             return
 
         yield event.plain_result(
-            f"🔍 正在检查 {len(subs)} 个UP主的更新...\n"
-            f"这可能需要一些时间，请耐心等待"
+            f"🔍 正在检查 {len(subs)} 个UP主的更新...\n这可能需要一些时间，请耐心等待"
         )
 
         found_new = 0
@@ -802,7 +853,9 @@ class BiliBriefPlugin(Star):
                 mid = up["mid"]
                 last_bvid = up.get("last_bvid", "")
 
-                videos = await get_latest_videos(mid, count=1, cookies=self.bili_cookies)
+                videos = await get_latest_videos(
+                    mid, count=1, cookies=self.bili_cookies
+                )
                 if not videos:
                     continue
 
@@ -826,15 +879,21 @@ class BiliBriefPlugin(Star):
                 )
 
                 video_url = f"https://www.bilibili.com/video/{latest_bvid}"
-                note = await self._generate_note(video_url)
+                note, artifacts = await self._generate_note(video_url)
                 if not isinstance(note, str) or not note.strip():
                     note = "❌ 总结生成结果为空"
-                feishu_result = await self._try_push_note_to_feishu(note, video_url, source="manual")
+                feishu_result = await self._try_push_note_to_feishu(
+                    note, video_url, source="manual", artifacts=artifacts
+                )
                 result = self._render_and_get_chain(note)
                 if isinstance(result, list):
                     yield event.chain_result(result)
                 else:
-                    safe_text = result if isinstance(result, str) and result else "❌ 总结发送内容为空"
+                    safe_text = (
+                        result
+                        if isinstance(result, str) and result
+                        else "❌ 总结发送内容为空"
+                    )
                     yield event.plain_result(safe_text)
                 if feishu_result.get("attempted") and feishu_result.get("success"):
                     doc_url = (feishu_result.get("detail") or {}).get("doc_url", "")
@@ -860,8 +919,8 @@ class BiliBriefPlugin(Star):
         从 unified_msg_origin 中提取平台前缀
         例如 'aiocqhttp:GroupMessage:123' -> 'aiocqhttp'
         """
-        parts = origin.split(':')
-        return parts[0] if parts else ''
+        parts = origin.split(":")
+        return parts[0] if parts else ""
 
     def _build_group_origin(self, origin: str, group_id: str) -> str:
         """根据当前平台构建群消息 origin"""
@@ -938,7 +997,9 @@ class BiliBriefPlugin(Star):
             return
         args = self._parse_args(event.message_str)
         if not args:
-            yield event.plain_result("❌ 请提供要移除的群号或QQ号\n用法: /移除推送 <群号或QQ号>")
+            yield event.plain_result(
+                "❌ 请提供要移除的群号或QQ号\n用法: /移除推送 <群号或QQ号>"
+            )
             return
 
         target_id = args.strip()
@@ -965,7 +1026,9 @@ class BiliBriefPlugin(Star):
             return
 
         if not result.get("attempted"):
-            yield event.plain_result(f"ℹ️ 最近一次未尝试飞书发布: {result.get('reason', 'unknown')}")
+            yield event.plain_result(
+                f"ℹ️ 最近一次未尝试飞书发布: {result.get('reason', 'unknown')}"
+            )
             return
 
         detail = result.get("detail") or {}
@@ -978,11 +1041,13 @@ class BiliBriefPlugin(Star):
                 msg += f"\n🖼️ 图片绑定: 成功 {detail.get('images_ok', 0)} / 失败 {detail.get('images_fail', 0)}"
             yield event.plain_result(msg)
         else:
-            yield event.plain_result(f"❌ 最近一次飞书发布失败\n原因: {result.get('message', '未知错误')}")
+            yield event.plain_result(
+                f"❌ 最近一次飞书发布失败\n原因: {result.get('message', '未知错误')}"
+            )
 
     # ==================== 核心逻辑 ====================
 
-    async def _generate_note(self, video_url: str) -> str:
+    async def _generate_note(self, video_url: str):
         """生成总结的统一调用入口"""
         self._log("═══════ [生成总结] 开始 ═══════")
         style = self.config.get("note_style", "detailed")
@@ -997,7 +1062,7 @@ class BiliBriefPlugin(Star):
         )
 
         try:
-            result = await self.note_service.generate_note(
+            result = await self.note_service.generate_note_with_artifacts(
                 video_url=video_url,
                 llm_ask_func=self._ask_llm,
                 style=style,
@@ -1006,21 +1071,29 @@ class BiliBriefPlugin(Star):
                 quality=quality,
                 max_length=max_length,
             )
-            self._log(f"[生成总结] 完成, 结果长度={len(result) if result else 0}")
+            note_text = str(result.note_text or "")
+            artifacts = result.artifacts or {}
+            self._last_note_artifacts = artifacts
+            self._log(
+                f"[生成总结] 完成, 结果长度={len(note_text) if note_text else 0}, "
+                f"artifacts={list(artifacts.keys())}"
+            )
             self._log("═══════ [生成总结] 结束 ═══════")
-            return result
+            return note_text, artifacts
         except Exception as e:
             self._log(f"[生成总结] 异常: {e}")
             self._log("═══════ [生成总结] 结束(异常) ═══════")
             logger.error(f"总结生成异常: {e}", exc_info=True)
-            return f"❌ 总结生成失败: {str(e)}"
+            return f"❌ 总结生成失败: {str(e)}", {}
 
     async def _ask_llm(self, prompt: str) -> str:
         """调用 AstrBot 内置 LLM"""
         try:
             self._log(f"[AskLLM] prompt 长度={len(prompt)}, 前100字: {prompt[:100]}...")
             provider = self.context.get_using_provider()
-            self._log(f"[AskLLM] provider={type(provider).__name__ if provider else 'None'}")
+            self._log(
+                f"[AskLLM] provider={type(provider).__name__ if provider else 'None'}"
+            )
             if not provider:
                 return "❌ 未配置 LLM Provider，请在 AstrBot 设置中配置"
 
@@ -1030,15 +1103,17 @@ class BiliBriefPlugin(Star):
             )
             self._log(f"[AskLLM] response type={type(response).__name__}")
 
-            if hasattr(response, 'completion_text'):
+            if hasattr(response, "completion_text"):
                 result = response.completion_text
-                self._log(f"[AskLLM] 使用 completion_text, 长度={len(result) if result else 0}")
+                self._log(
+                    f"[AskLLM] 使用 completion_text, 长度={len(result) if result else 0}"
+                )
                 return result
             elif isinstance(response, str):
                 self._log(f"[AskLLM] response 是 str, 长度={len(response)}")
                 return response
             else:
-                self._log(f"[AskLLM] response 转 str")
+                self._log("[AskLLM] response 转 str")
                 return str(response)
 
         except Exception as e:
@@ -1103,8 +1178,10 @@ class BiliBriefPlugin(Star):
         video_url = f"https://www.bilibili.com/video/{latest_bvid}"
 
         # 生成总结
-        note = await self._generate_note(video_url)
-        await self._try_push_note_to_feishu(note, video_url, source="auto")
+        note, artifacts = await self._generate_note(video_url)
+        await self._try_push_note_to_feishu(
+            note, video_url, source="auto", artifacts=artifacts
+        )
 
         # 推送消息
         push_header = f"🔔 UP主【{up['name']}】发布了新视频!\n"

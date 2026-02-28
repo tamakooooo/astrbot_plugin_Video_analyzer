@@ -2,7 +2,8 @@ import os
 import re
 import time
 import uuid
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any
 
 import aiohttp
 
@@ -36,68 +37,108 @@ class FeishuWikiPusher:
     def is_config_ready(self) -> bool:
         return bool(self.app_id and self.app_secret and self.space_id)
 
-    async def push_note(self, note_text: str, video_url: str = "") -> Tuple[bool, str, Dict]:
+    async def push_note(
+        self,
+        note_text: str,
+        video_url: str = "",
+        screenshot_paths: list[str] | None = None,
+        mindmap_mermaid: str = "",
+    ) -> tuple[bool, str, dict]:
         """
         推送总结到飞书知识库
 
         :return: (是否成功, 信息)
         """
         if not self.is_config_ready():
-            return False, "飞书配置不完整（缺少 app_id/app_secret/space_id）", {
-                "success": False,
-                "error": "config_incomplete",
-            }
+            return (
+                False,
+                "飞书配置不完整（缺少 app_id/app_secret/space_id）",
+                {
+                    "success": False,
+                    "error": "config_incomplete",
+                },
+            )
 
         if not note_text or not note_text.strip():
-            return False, "总结内容为空", {
-                "success": False,
-                "error": "empty_note",
-            }
+            return (
+                False,
+                "总结内容为空",
+                {
+                    "success": False,
+                    "error": "empty_note",
+                },
+            )
 
         token = await self._get_tenant_access_token()
         if not token:
-            return False, "获取 tenant_access_token 失败", {
-                "success": False,
-                "error": "token_failed",
-            }
+            return (
+                False,
+                "获取 tenant_access_token 失败",
+                {
+                    "success": False,
+                    "error": "token_failed",
+                },
+            )
 
         title = self._build_title(note_text, video_url)
         doc_id, node_token = await self._create_wiki_doc(token, title)
         if not doc_id:
-            return False, "创建飞书知识库文档失败", {
-                "success": False,
-                "error": "create_doc_failed",
-            }
+            return (
+                False,
+                "创建飞书知识库文档失败",
+                {
+                    "success": False,
+                    "error": "create_doc_failed",
+                },
+            )
 
         root_block_id = await self._get_document_root_block_id(token, doc_id)
         if not root_block_id:
-            return False, "获取飞书文档根块失败", {
-                "success": False,
-                "error": "get_root_block_failed",
-                "doc_id": doc_id,
-                "node_token": node_token,
-                "doc_url": self._build_doc_url(node_token),
-            }
+            return (
+                False,
+                "获取飞书文档根块失败",
+                {
+                    "success": False,
+                    "error": "get_root_block_failed",
+                    "doc_id": doc_id,
+                    "node_token": node_token,
+                    "doc_url": self._build_doc_url(node_token),
+                },
+            )
 
-        blocks, image_tasks = self._build_blocks_from_markdown(note_text, video_url)
+        blocks, image_tasks = self._build_blocks_from_markdown(
+            note_text=note_text,
+            video_url=video_url,
+            screenshot_paths=screenshot_paths or [],
+        )
         if not blocks:
-            return False, "生成飞书块内容失败", {
-                "success": False,
-                "error": "build_blocks_failed",
-                "doc_id": doc_id,
-                "node_token": node_token,
-                "doc_url": self._build_doc_url(node_token),
-            }
+            return (
+                False,
+                "生成飞书块内容失败",
+                {
+                    "success": False,
+                    "error": "build_blocks_failed",
+                    "doc_id": doc_id,
+                    "node_token": node_token,
+                    "doc_url": self._build_doc_url(node_token),
+                },
+            )
 
-        ok, block_id_relations = await self._append_blocks(token, doc_id, root_block_id, blocks)
+        ok, block_id_relations = await self._append_blocks(
+            token, doc_id, root_block_id, blocks
+        )
         if not ok:
-            return False, "写入飞书文档失败", {
-                "success": False,
-                "error": "append_blocks_failed",
-                "doc_id": doc_id,
-                "node_token": node_token,
-                "doc_url": self._build_doc_url(node_token),
-            }
+            return (
+                False,
+                "写入飞书文档失败",
+                {
+                    "success": False,
+                    "error": "append_blocks_failed",
+                    "doc_id": doc_id,
+                    "node_token": node_token,
+                    "doc_url": self._build_doc_url(node_token),
+                },
+            )
 
         image_ok_count, image_fail_count = await self._bind_images(
             token=token,
@@ -106,28 +147,45 @@ class FeishuWikiPusher:
             image_tasks=image_tasks,
         )
 
+        mindmap_result = await self._try_insert_mindmap_whiteboard(
+            token=token,
+            doc_id=doc_id,
+            mindmap_mermaid=mindmap_mermaid,
+        )
+
         extra = ""
         if image_tasks:
             extra = f", images_ok={image_ok_count}, images_fail={image_fail_count}"
+        if mindmap_result.get("attempted"):
+            extra += (
+                f", mindmap={'ok' if mindmap_result.get('success') else 'failed'}"
+                if not mindmap_result.get("skipped")
+                else ", mindmap=skipped"
+            )
         doc_url = self._build_doc_url(node_token)
-        return True, f"推送成功，doc_id={doc_id}, node_token={node_token}{extra}", {
-            "success": True,
-            "doc_id": doc_id,
-            "node_token": node_token,
-            "doc_url": doc_url,
-            "images_ok": image_ok_count,
-            "images_fail": image_fail_count,
-            "image_tasks": len(image_tasks),
-        }
+        return (
+            True,
+            f"推送成功，doc_id={doc_id}, node_token={node_token}{extra}",
+            {
+                "success": True,
+                "doc_id": doc_id,
+                "node_token": node_token,
+                "doc_url": doc_url,
+                "images_ok": image_ok_count,
+                "images_fail": image_fail_count,
+                "image_tasks": len(image_tasks),
+                "mindmap": mindmap_result,
+            },
+        )
 
-    def _build_doc_url(self, node_token: Optional[str]) -> str:
+    def _build_doc_url(self, node_token: str | None) -> str:
         if not node_token:
             return ""
         if self.domain == "lark":
             return f"https://{self.domain}.com/wiki/{node_token}"
         return f"https://{self.domain}.cn/wiki/{node_token}"
 
-    async def _get_tenant_access_token(self) -> Optional[str]:
+    async def _get_tenant_access_token(self) -> str | None:
         now = time.time()
         if self._token and now < self._token_expire_at:
             return self._token
@@ -142,7 +200,9 @@ class FeishuWikiPusher:
             async with aiohttp.ClientSession(timeout=self._timeout) as session:
                 async with session.post(url, json=payload) as resp:
                     if resp.status != 200:
-                        logger.warning(f"[FeishuWiki] 获取 token HTTP 异常: {resp.status}")
+                        logger.warning(
+                            f"[FeishuWiki] 获取 token HTTP 异常: {resp.status}"
+                        )
                         return None
                     data = await resp.json()
         except Exception as e:
@@ -150,7 +210,9 @@ class FeishuWikiPusher:
             return None
 
         if data.get("code") != 0:
-            logger.warning(f"[FeishuWiki] 获取 token 失败: code={data.get('code')}, msg={data.get('msg')}")
+            logger.warning(
+                f"[FeishuWiki] 获取 token 失败: code={data.get('code')}, msg={data.get('msg')}"
+            )
             return None
 
         token = data.get("tenant_access_token", "")
@@ -162,7 +224,9 @@ class FeishuWikiPusher:
         self._token_expire_at = now + max(60, expire - 120)
         return token
 
-    async def _create_wiki_doc(self, token: str, title: str) -> Tuple[Optional[str], Optional[str]]:
+    async def _create_wiki_doc(
+        self, token: str, title: str
+    ) -> tuple[str | None, str | None]:
         url = f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{self.space_id}/nodes"
         headers = {"Authorization": f"Bearer {token}"}
         payload = {
@@ -190,7 +254,7 @@ class FeishuWikiPusher:
         node = (data.get("data") or {}).get("node") or {}
         return node.get("obj_token"), node.get("node_token")
 
-    async def _get_document_root_block_id(self, token: str, doc_id: str) -> Optional[str]:
+    async def _get_document_root_block_id(self, token: str, doc_id: str) -> str | None:
         url = f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks"
         headers = {"Authorization": f"Bearer {token}"}
         params = {"page_size": 200, "document_revision_id": -1}
@@ -204,10 +268,12 @@ class FeishuWikiPusher:
             return None
 
         if data.get("code") != 0:
-            logger.warning(f"[FeishuWiki] 获取根块失败: code={data.get('code')}, msg={data.get('msg')}")
+            logger.warning(
+                f"[FeishuWiki] 获取根块失败: code={data.get('code')}, msg={data.get('msg')}"
+            )
             return None
 
-        items = (((data.get("data") or {}).get("items")) or [])
+        items = ((data.get("data") or {}).get("items")) or []
         if not items:
             return None
 
@@ -217,18 +283,18 @@ class FeishuWikiPusher:
         return items[0].get("block_id")
 
     async def _append_blocks(
-        self, token: str, doc_id: str, parent_block_id: str, blocks: List[dict]
-    ) -> Tuple[bool, Dict[str, str]]:
+        self, token: str, doc_id: str, parent_block_id: str, blocks: list[dict]
+    ) -> tuple[bool, dict[str, str]]:
         headers = {"Authorization": f"Bearer {token}"}
         url = (
             f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks/"
             f"{parent_block_id}/children?document_revision_id=-1"
         )
-        relations: Dict[str, str] = {}
+        relations: dict[str, str] = {}
 
         chunk_size = 30
         for i in range(0, len(blocks), chunk_size):
-            chunk = blocks[i:i + chunk_size]
+            chunk = blocks[i : i + chunk_size]
             payload = {"children": chunk, "index": i}
             try:
                 async with aiohttp.ClientSession(timeout=self._timeout) as session:
@@ -239,7 +305,9 @@ class FeishuWikiPusher:
                 return False, relations
 
             if data.get("code") != 0:
-                logger.warning(f"[FeishuWiki] 追加块失败: code={data.get('code')}, msg={data.get('msg')}")
+                logger.warning(
+                    f"[FeishuWiki] 追加块失败: code={data.get('code')}, msg={data.get('msg')}"
+                )
                 return False, relations
 
             for item in (data.get("data") or {}).get("block_id_relations", []) or []:
@@ -271,9 +339,14 @@ class FeishuWikiPusher:
 
         return f"{self.title_prefix} - {first_non_empty}"[:100]
 
-    def _build_blocks_from_markdown(self, note_text: str, video_url: str) -> Tuple[List[dict], Dict[str, str]]:
-        blocks: List[dict] = []
-        image_tasks: Dict[str, str] = {}
+    def _build_blocks_from_markdown(
+        self,
+        note_text: str,
+        video_url: str,
+        screenshot_paths: list[str] | None = None,
+    ) -> tuple[list[dict], dict[str, dict[str, str]]]:
+        blocks: list[dict] = []
+        image_tasks: dict[str, dict[str, str]] = {}
 
         if video_url:
             blocks.append(self._text_block(f"原视频链接：{video_url}"))
@@ -281,9 +354,9 @@ class FeishuWikiPusher:
         lines = note_text.splitlines()
         in_code_block = False
         code_lang = ""
-        code_lines: List[str] = []
+        code_lines: list[str] = []
         in_formula_block = False
-        formula_lines: List[str] = []
+        formula_lines: list[str] = []
 
         for raw in lines:
             line = raw.rstrip("\n")
@@ -324,7 +397,11 @@ class FeishuWikiPusher:
             if in_formula_block:
                 formula_lines.append(line)
                 continue
-            if stripped.startswith("$$") and stripped.endswith("$$") and len(stripped) > 4:
+            if (
+                stripped.startswith("$$")
+                and stripped.endswith("$$")
+                and len(stripped) > 4
+            ):
                 expr = stripped[2:-2].strip()
                 if expr:
                     blocks.append(self._equation_block(expr))
@@ -341,7 +418,7 @@ class FeishuWikiPusher:
                 img_url = image_match.group(2).strip()
                 temp_id = f"img_{uuid.uuid4().hex[:12]}"
                 blocks.append(self._image_block(temp_id))
-                image_tasks[temp_id] = img_url
+                image_tasks[temp_id] = {"type": "url", "value": img_url}
                 if alt:
                     blocks.append(self._text_block(f"图：{alt}"))
                 continue
@@ -371,13 +448,17 @@ class FeishuWikiPusher:
             # 无序列表
             bullet = re.match(r"^[-*]\s+(.*)$", stripped)
             if bullet:
-                blocks.append(self._list_block_with_inline(bullet.group(1).strip(), ordered=False))
+                blocks.append(
+                    self._list_block_with_inline(bullet.group(1).strip(), ordered=False)
+                )
                 continue
 
             # 有序列表
             ordered = re.match(r"^\d+\.\s+(.*)$", stripped)
             if ordered:
-                blocks.append(self._list_block_with_inline(ordered.group(1).strip(), ordered=True))
+                blocks.append(
+                    self._list_block_with_inline(ordered.group(1).strip(), ordered=True)
+                )
                 continue
 
             # 表格行（降级为文本）
@@ -401,16 +482,28 @@ class FeishuWikiPusher:
             if expr:
                 blocks.append(self._equation_block(expr))
 
+        screenshot_paths = screenshot_paths or []
+        if screenshot_paths:
+            blocks.append(self._heading_block(2, "视频截图"))
+            for idx, screenshot_path in enumerate(screenshot_paths, start=1):
+                p = Path(str(screenshot_path))
+                if not p.exists() or not p.is_file():
+                    continue
+                temp_id = f"simg_{uuid.uuid4().hex[:12]}"
+                blocks.append(self._image_block(temp_id))
+                image_tasks[temp_id] = {"type": "local", "value": str(p)}
+                blocks.append(self._text_block(f"截图 {idx}"))
+
         return blocks, image_tasks
 
     @staticmethod
-    def _split_text(text: str, max_len: int = 900) -> List[str]:
+    def _split_text(text: str, max_len: int = 900) -> list[str]:
         if len(text) <= max_len:
             return [text]
         parts = []
         start = 0
         while start < len(text):
-            parts.append(text[start:start + max_len])
+            parts.append(text[start : start + max_len])
             start += max_len
         return parts
 
@@ -438,12 +531,14 @@ class FeishuWikiPusher:
         return {
             "block_type": 2,
             "text": {
-                "elements": [{
-                    "text_run": {
-                        "content": content,
-                        "text_element_style": self._default_text_style(),
+                "elements": [
+                    {
+                        "text_run": {
+                            "content": content,
+                            "text_element_style": self._default_text_style(),
+                        }
                     }
-                }],
+                ],
                 "style": {"align": 1, "folded": False},
             },
         }
@@ -463,12 +558,14 @@ class FeishuWikiPusher:
         return {
             "block_type": 13 if ordered else 12,
             key: {
-                "elements": [{
-                    "text_run": {
-                        "content": content,
-                        "text_element_style": self._default_text_style(),
+                "elements": [
+                    {
+                        "text_run": {
+                            "content": content,
+                            "text_element_style": self._default_text_style(),
+                        }
                     }
-                }],
+                ],
                 "style": {"align": 1},
             },
         }
@@ -477,12 +574,14 @@ class FeishuWikiPusher:
         return {
             "block_type": 14,
             "code": {
-                "elements": [{
-                    "text_run": {
-                        "content": code,
-                        "text_element_style": self._default_text_style(),
+                "elements": [
+                    {
+                        "text_run": {
+                            "content": code,
+                            "text_element_style": self._default_text_style(),
+                        }
                     }
-                }],
+                ],
                 "style": {
                     "language": self._map_code_language(lang),
                     "wrap": True,
@@ -494,12 +593,14 @@ class FeishuWikiPusher:
         return {
             "block_type": 2,
             "text": {
-                "elements": [{
-                    "equation": {
-                        "content": expr,
-                        "text_element_style": self._default_text_style(),
+                "elements": [
+                    {
+                        "equation": {
+                            "content": expr,
+                            "text_element_style": self._default_text_style(),
+                        }
                     }
-                }],
+                ],
                 "style": {"align": 1, "folded": False},
             },
         }
@@ -549,48 +650,54 @@ class FeishuWikiPusher:
         }
         return mapping.get((lang or "").strip().lower(), 1)
 
-    def _parse_inline_elements(self, text: str) -> List[dict]:
+    def _parse_inline_elements(self, text: str) -> list[dict]:
         """
         解析行内 Markdown 样式（bold/italic/inline_code/strikethrough/link降级）
         """
         # 链接降级: [text](url) -> text (url)
         normalized = re.sub(r"\[([^\]]+)\]\((https?://[^\)]+)\)", r"\1 (\2)", text)
         tokens = self._tokenize_inline(normalized)
-        elements: List[dict] = []
+        elements: list[dict] = []
         for token in tokens:
             style = self._default_text_style()
             style.update(token.get("style", {}))
             if "equation" in token:
-                elements.append({
-                    "equation": {
-                        "content": token["equation"],
-                        "text_element_style": style,
+                elements.append(
+                    {
+                        "equation": {
+                            "content": token["equation"],
+                            "text_element_style": style,
+                        }
                     }
-                })
+                )
             else:
-                elements.append({
-                    "text_run": {
-                        "content": token.get("text", ""),
-                        "text_element_style": style,
+                elements.append(
+                    {
+                        "text_run": {
+                            "content": token.get("text", ""),
+                            "text_element_style": style,
+                        }
                     }
-                })
-        return elements or [{
-            "text_run": {
-                "content": text,
-                "text_element_style": self._default_text_style(),
+                )
+        return elements or [
+            {
+                "text_run": {
+                    "content": text,
+                    "text_element_style": self._default_text_style(),
+                }
             }
-        }]
+        ]
 
-    def _tokenize_inline(self, text: str) -> List[Dict]:
+    def _tokenize_inline(self, text: str) -> list[dict]:
         pattern = re.compile(
             r"(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|~~[^~]+~~|\$[^$]+\$)"
         )
         pos = 0
-        out: List[Dict] = []
+        out: list[dict] = []
 
         for m in pattern.finditer(text):
             if m.start() > pos:
-                out.append({"text": text[pos:m.start()], "style": {}})
+                out.append({"text": text[pos : m.start()], "style": {}})
             token = m.group(0)
             parsed = self._parse_inline_token(token)
             out.append(parsed)
@@ -599,7 +706,7 @@ class FeishuWikiPusher:
         if pos < len(text):
             out.append({"text": text[pos:], "style": {}})
 
-        merged: List[Dict] = []
+        merged: list[dict] = []
         for item in out:
             if "equation" in item:
                 merged.append(item)
@@ -617,14 +724,18 @@ class FeishuWikiPusher:
         return merged
 
     @staticmethod
-    def _parse_inline_token(token: str) -> Dict:
+    def _parse_inline_token(token: str) -> dict:
         if token.startswith("`") and token.endswith("`"):
             return {"text": token[1:-1], "style": {"inline_code": True}}
         if token.startswith("$") and token.endswith("$"):
             return {"equation": token[1:-1], "style": {}}
-        if (token.startswith("**") and token.endswith("**")) or (token.startswith("__") and token.endswith("__")):
+        if (token.startswith("**") and token.endswith("**")) or (
+            token.startswith("__") and token.endswith("__")
+        ):
             return {"text": token[2:-2], "style": {"bold": True}}
-        if (token.startswith("*") and token.endswith("*")) or (token.startswith("_") and token.endswith("_")):
+        if (token.startswith("*") and token.endswith("*")) or (
+            token.startswith("_") and token.endswith("_")
+        ):
             return {"text": token[1:-1], "style": {"italic": True}}
         if token.startswith("~~") and token.endswith("~~"):
             return {"text": token[2:-2], "style": {"strikethrough": True}}
@@ -634,26 +745,41 @@ class FeishuWikiPusher:
         self,
         token: str,
         doc_id: str,
-        block_id_relations: Dict[str, str],
-        image_tasks: Dict[str, str],
-    ) -> Tuple[int, int]:
+        block_id_relations: dict[str, str],
+        image_tasks: dict[str, dict[str, str]],
+    ) -> tuple[int, int]:
         if not image_tasks:
             return 0, 0
 
         ok_count = 0
         fail_count = 0
-        for temp_id, image_url in image_tasks.items():
+        for temp_id, task in image_tasks.items():
             block_id = block_id_relations.get(temp_id)
             if not block_id:
                 logger.warning(f"[FeishuWiki] 图片块映射缺失: {temp_id}")
                 fail_count += 1
                 continue
             try:
-                file_token = await self._upload_image_media_from_url(token, image_url, block_id)
+                task_type = str((task or {}).get("type") or "url")
+                task_value = str((task or {}).get("value") or "").strip()
+                if not task_value:
+                    fail_count += 1
+                    continue
+
+                if task_type == "local":
+                    file_token = await self._upload_image_media_from_local(
+                        token, task_value, block_id
+                    )
+                else:
+                    file_token = await self._upload_image_media_from_url(
+                        token, task_value, block_id
+                    )
                 if not file_token:
                     fail_count += 1
                     continue
-                replaced = await self._replace_image_block(token, doc_id, block_id, file_token)
+                replaced = await self._replace_image_block(
+                    token, doc_id, block_id, file_token
+                )
                 if replaced:
                     ok_count += 1
                 else:
@@ -664,15 +790,201 @@ class FeishuWikiPusher:
 
         return ok_count, fail_count
 
+    async def _upload_image_media_from_local(
+        self, token: str, image_path: str, parent_block_id: str
+    ) -> str | None:
+        path = Path(image_path)
+        if not path.exists() or not path.is_file():
+            logger.warning(f"[FeishuWiki] 本地图片不存在: {image_path}")
+            return None
+        try:
+            image_bytes = path.read_bytes()
+        except Exception as e:
+            logger.warning(f"[FeishuWiki] 读取本地图片失败: {e}, path={image_path}")
+            return None
+
+        if not image_bytes:
+            return None
+
+        upload_url = "https://open.feishu.cn/open-apis/drive/v1/medias/upload_all"
+        headers = {"Authorization": f"Bearer {token}"}
+        file_name = path.name
+
+        form = aiohttp.FormData()
+        form.add_field(
+            "file",
+            image_bytes,
+            filename=file_name,
+            content_type=self._guess_mime(file_name),
+        )
+        form.add_field("file_name", file_name)
+        form.add_field("parent_type", "docx_image")
+        form.add_field("parent_node", parent_block_id)
+        form.add_field("size", str(len(image_bytes)))
+
+        try:
+            async with aiohttp.ClientSession(timeout=self._timeout) as session:
+                async with session.post(upload_url, headers=headers, data=form) as resp:
+                    data = await resp.json()
+        except Exception as e:
+            logger.warning(f"[FeishuWiki] 上传本地图片异常: {e}")
+            return None
+
+        if data.get("code") != 0:
+            logger.warning(
+                f"[FeishuWiki] 上传本地图片失败: code={data.get('code')}, msg={data.get('msg')}"
+            )
+            return None
+
+        payload = data.get("data") or {}
+        return payload.get("file_token") or data.get("file_token")
+
+    async def _try_insert_mindmap_whiteboard(
+        self,
+        token: str,
+        doc_id: str,
+        mindmap_mermaid: str,
+    ) -> dict[str, Any]:
+        mermaid = (mindmap_mermaid or "").strip()
+        if not mermaid:
+            return {
+                "attempted": True,
+                "success": False,
+                "skipped": True,
+                "reason": "mindmap_empty",
+            }
+
+        align = self._normalize_int(
+            self._safe_config_get("feishu_mindmap_align"), default=2, min_v=1, max_v=3
+        )
+        style_type = self._normalize_int(
+            self._safe_config_get("feishu_mindmap_style_type"),
+            default=1,
+            min_v=1,
+            max_v=2,
+        )
+
+        try:
+            whiteboard = await self._create_whiteboard_block(
+                token=token, doc_id=doc_id, align=align
+            )
+            board_token = str(
+                ((whiteboard or {}).get("board") or {}).get("token") or ""
+            ).strip()
+            block_id = str((whiteboard or {}).get("block_id") or "").strip()
+            if not board_token:
+                return {
+                    "attempted": True,
+                    "success": False,
+                    "skipped": False,
+                    "reason": "whiteboard_token_missing",
+                    "block_id": block_id,
+                }
+            diagram = await self._create_mermaid_node(
+                token=token,
+                whiteboard_token=board_token,
+                mermaid_code=mermaid,
+                style_type=style_type,
+            )
+            return {
+                "attempted": True,
+                "success": True,
+                "skipped": False,
+                "block_id": block_id,
+                "whiteboard_id": board_token,
+                "diagram": diagram,
+            }
+        except Exception as e:
+            logger.warning(f"[FeishuWiki] 插入思维导图白板失败: {e}")
+            return {
+                "attempted": True,
+                "success": False,
+                "skipped": False,
+                "reason": "whiteboard_exception",
+                "error": str(e),
+            }
+
+    async def _create_whiteboard_block(
+        self, token: str, doc_id: str, align: int = 2
+    ) -> dict[str, Any]:
+        root_block_id = await self._get_document_root_block_id(token, doc_id)
+        if not root_block_id:
+            raise RuntimeError("root_block_not_found")
+        url = (
+            f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks/"
+            f"{root_block_id}/children?document_revision_id=-1"
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        payload = {
+            "children": [
+                {
+                    "block_type": 43,
+                    "whiteboard": {
+                        "elements": [],
+                        "style": {"align": align},
+                    },
+                }
+            ]
+        }
+
+        async with aiohttp.ClientSession(timeout=self._timeout) as session:
+            async with session.post(url, headers=headers, json=payload) as resp:
+                data = await resp.json()
+        if data.get("code") != 0:
+            raise RuntimeError(
+                f"create_whiteboard_failed:{data.get('code')}:{data.get('msg')}"
+            )
+        children = (data.get("data") or {}).get("children") or []
+        for child in children:
+            if int(child.get("block_type") or 0) == 43:
+                return child
+        raise RuntimeError("whiteboard_block_not_found")
+
+    async def _create_mermaid_node(
+        self,
+        token: str,
+        whiteboard_token: str,
+        mermaid_code: str,
+        style_type: int = 1,
+    ) -> dict[str, Any]:
+        url = f"https://open.feishu.cn/open-apis/board/v1/whiteboards/{whiteboard_token}/nodes/plantuml"
+        headers = {"Authorization": f"Bearer {token}"}
+        payload = {
+            "plant_uml_code": mermaid_code,
+            "style_type": 1 if style_type not in (1, 2) else style_type,
+            "syntax_type": 2,
+        }
+        async with aiohttp.ClientSession(timeout=self._timeout) as session:
+            async with session.post(url, headers=headers, json=payload) as resp:
+                data = await resp.json()
+        if data.get("code") != 0:
+            raise RuntimeError(
+                f"create_mermaid_failed:{data.get('code')}:{data.get('msg')}"
+            )
+        return data.get("data") or {}
+
+    def _safe_config_get(self, key: str):
+        return os.getenv(key.upper(), "")
+
+    @staticmethod
+    def _normalize_int(value: Any, default: int, min_v: int, max_v: int) -> int:
+        try:
+            parsed = int(str(value).strip())
+        except Exception:
+            parsed = default
+        return max(min_v, min(max_v, parsed))
+
     async def _upload_image_media_from_url(
         self, token: str, image_url: str, parent_block_id: str
-    ) -> Optional[str]:
+    ) -> str | None:
         # 1) 下载图片
         try:
             async with aiohttp.ClientSession(timeout=self._timeout) as session:
                 async with session.get(image_url) as resp:
                     if resp.status != 200:
-                        logger.warning(f"[FeishuWiki] 下载图片失败 HTTP {resp.status}: {image_url}")
+                        logger.warning(
+                            f"[FeishuWiki] 下载图片失败 HTTP {resp.status}: {image_url}"
+                        )
                         return None
                     image_bytes = await resp.read()
         except Exception as e:
@@ -691,7 +1003,12 @@ class FeishuWikiPusher:
             parsed_name += ".png"
 
         form = aiohttp.FormData()
-        form.add_field("file", image_bytes, filename=parsed_name, content_type=self._guess_mime(parsed_name))
+        form.add_field(
+            "file",
+            image_bytes,
+            filename=parsed_name,
+            content_type=self._guess_mime(parsed_name),
+        )
         form.add_field("file_name", parsed_name)
         form.add_field("parent_type", "docx_image")
         form.add_field("parent_node", parent_block_id)
@@ -706,7 +1023,9 @@ class FeishuWikiPusher:
             return None
 
         if data.get("code") != 0:
-            logger.warning(f"[FeishuWiki] 上传图片失败: code={data.get('code')}, msg={data.get('msg')}")
+            logger.warning(
+                f"[FeishuWiki] 上传图片失败: code={data.get('code')}, msg={data.get('msg')}"
+            )
             return None
 
         payload = data.get("data") or {}
@@ -728,7 +1047,9 @@ class FeishuWikiPusher:
             return False
 
         if data.get("code") != 0:
-            logger.warning(f"[FeishuWiki] 替换图片块失败: code={data.get('code')}, msg={data.get('msg')}")
+            logger.warning(
+                f"[FeishuWiki] 替换图片块失败: code={data.get('code')}, msg={data.get('msg')}"
+            )
             return False
         return True
 
@@ -750,12 +1071,14 @@ class FeishuWikiPusher:
         return {
             "block_type": block_type,
             key: {
-                "elements": [{
-                    "text_run": {
-                        "content": content,
-                        "text_element_style": self._default_text_style(),
+                "elements": [
+                    {
+                        "text_run": {
+                            "content": content,
+                            "text_element_style": self._default_text_style(),
+                        }
                     }
-                }],
+                ],
                 "style": {"align": 1, "folded": False},
             },
         }
