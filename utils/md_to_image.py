@@ -315,7 +315,7 @@ def _extract_title(html: str) -> tuple:
 def render_note_image(
     markdown_text: str,
     output_path: str,
-    width: int = 1600,
+    width: int = 1760,
 ) -> str | None:
     try:
         import imgkit
@@ -352,17 +352,17 @@ def render_note_image(
             logo_uri,
             title_text,
             footer_time,
-            page_width=width,
+            page_width=max(1000, width - 40),
         )
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         max_output_bytes = 9 * 1024 * 1024
         render_profiles = [
-            {"quality": "92", "zoom": "1.25", "image_dpi": "220"},
-            {"quality": "88", "zoom": "1.15", "image_dpi": "180"},
-            {"quality": "84", "zoom": "1.05", "image_dpi": "144"},
-            {"quality": "80", "zoom": "1.00", "image_dpi": "120"},
+            {"quality": "92", "zoom": "1.00"},
+            {"quality": "88", "zoom": "1.00"},
+            {"quality": "84", "zoom": "1.00"},
+            {"quality": "80", "zoom": "1.00"},
         ]
 
         for profile in render_profiles:
@@ -372,7 +372,6 @@ def render_note_image(
                 "encoding": "UTF-8",
                 "quality": profile["quality"],
                 "zoom": profile["zoom"],
-                "image-dpi": profile["image_dpi"],
                 "enable-local-file-access": "",
                 "no-stop-slow-scripts": "",
                 "disable-smart-width": "",
