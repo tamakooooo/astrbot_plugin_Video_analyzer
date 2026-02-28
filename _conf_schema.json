@@ -156,7 +156,7 @@
   "feishu_title_prefix": {
     "description": "飞书文档标题前缀",
     "type": "string",
-    "default": "biliVideo总结",
+    "default": "BiliBrief纪要",
     "hint": "创建飞书文档时的标题前缀"
   },
   "feishu_domain": {

@@ -1,6 +1,6 @@
-name: astrbot_plugin_biliVideo
-display_name: biliVideo 视频总结
-desc: 提供b站视频链接自动生成一份结构化的视频总结,带有订阅up主功能并定时推送最新视频
+name: astrbot_plugin_bilibrief
+display_name: BiliBrief 视频纪要
+desc: B站视频AI纪要与UP主订阅推送，支持飞书知识库发布
 version: v1.0.1
 author: storyAura
-repo: https://github.com/storyAura/astrbot_plugin_biliVideo
+repo: https://github.com/tamakooooo/astrbot_plugin_Video_analyzer

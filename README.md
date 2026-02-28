@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="logo.png" alt="biliVideo" width="100" height="100" style="border-radius: 20px;" />
-  <h1>biliVideo 视频总结</h1>
+  <img src="logo.png" alt="BiliBrief" width="100" height="100" style="border-radius: 20px;" />
+  <h1>BiliBrief 视频纪要</h1>
   <p><b>丢个B站链接，AI 帮你秒出精华总结</b></p>
 
   <br/>
@@ -21,13 +21,13 @@
 
 ## 📖 简介
 
-**biliVideo** 是一款运行在 [AstrBot]((https://astrbot.app/)) 上的 B站视频总结插件。
+**BiliBrief** 是一款运行在 [AstrBot]((https://astrbot.app/)) 上的 B站视频总结插件。
 
 你只需要丢一个B站视频链接，插件就会自动下载音频、提取字幕、调用 AI 大模型，生成一份结构化的视频总结 —— 并渲染成精美的暗色主题卡片图片发送到群聊。
 
 不仅如此，你还可以 **订阅 UP 主**，新视频发布时自动推送总结到群里，再也不怕错过喜欢的 UP 的内容了。
 
-## 🏆 biliVideo
+## 🏆 BiliBrief
 
 | 优势 | 说明 |
 |------|------|
@@ -152,7 +152,7 @@ apt install -y wkhtmltopdf
 | `feishu_app_secret` | 空 | 飞书应用 App Secret |
 | `feishu_wiki_space_id` | 空 | 飞书知识库 Space ID |
 | `feishu_parent_node_token` | 空 | 飞书知识库父节点 Token（可选） |
-| `feishu_title_prefix` | `biliVideo总结` | 飞书文档标题前缀 |
+| `feishu_title_prefix` | `BiliBrief纪要` | 飞书文档标题前缀 |
 | `feishu_domain` | `feishu` | 飞书链接域名：`feishu` / `lark` |
 | `access_mode` | `blacklist` | 群聊访问控制模式 |
 | `group_list` | 空 | 群号列表，逗号分隔 |
@@ -193,13 +193,13 @@ apt install -y wkhtmltopdf
 
 ## 📖 Introduction
 
-**biliVideo** is an AstrBot plugin that generates AI-powered summaries for Bilibili videos.
+**BiliBrief** is an AstrBot plugin that generates AI-powered summaries for Bilibili videos.
 
 Just send a Bilibili video link to your chat, and the plugin will automatically download the audio, extract subtitles, call your configured LLM, and generate a beautifully formatted summary — rendered as a stunning dark-themed card image.
 
 You can also **subscribe to content creators** and receive automatic summary pushes whenever they upload new videos.
 
-## 🏆 biliVideo
+## 🏆 BiliBrief
 
 | Advantage | Description |
 |-----------|-------------|
@@ -288,7 +288,7 @@ Scan the QR code with the Bilibili mobile app.
 | `feishu_app_secret` | empty | Feishu app secret |
 | `feishu_wiki_space_id` | empty | Feishu wiki space ID |
 | `feishu_parent_node_token` | empty | Feishu parent node token (optional) |
-| `feishu_title_prefix` | `biliVideo总结` | Feishu document title prefix |
+| `feishu_title_prefix` | `BiliBrief纪要` | Feishu document title prefix |
 | `feishu_domain` | `feishu` | Feishu link domain: `feishu` / `lark` |
 | `access_mode` | `blacklist` | Group access control mode |
 | `debug_mode` | `false` | Enable debug logging |

@@ -268,7 +268,7 @@ tr:nth-child(even) td{{background:rgba(148,163,184,.03)}}
 {body_html}
 </div>
 <div class="footer">
-  <div class="ftxt">Powered by <span class="br">biliVideo+</span> · AI 视频总结助手</div>
+  <div class="ftxt">Powered by <span class="br">BiliBrief+</span> · AI 视频纪要助手</div>
   <div class="ftime">{footer_time}</div>
 </div>
 </body></html>'''

@@ -1,7 +1,7 @@
 """
-BiliVideo 视频总结插件
+BiliBrief 视频纪要插件
 
-订阅 B站 UP主，定时/手动生成 AI 视频总结并推送到聊天
+订阅 B站 UP主，定时/手动生成 AI 视频纪要并推送到聊天
 """
 
 import asyncio
@@ -22,14 +22,14 @@ from .utils.url_parser import detect_platform, extract_bilibili_mid
 from .utils.md_to_image import render_note_image
 
 
-class BiliVideoPlugin(Star):
-    """BiliVideo 视频总结插件"""
+class BiliBriefPlugin(Star):
+    """BiliBrief 视频纪要插件"""
 
     def __init__(self, context: Context):
         super().__init__(context)
 
         # 数据目录（使用框架规范 API）
-        self.data_dir = str(StarTools.get_data_dir("astrbot_plugin_bilivideo"))
+        self.data_dir = str(StarTools.get_data_dir("astrbot_plugin_bilibrief"))
         os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(os.path.join(self.data_dir, "images"), exist_ok=True)
 
@@ -39,9 +39,9 @@ class BiliVideoPlugin(Star):
         # Debug 模式 —— 在其他所有初始化之前设置
         self._debug_mode = bool(self.config.get("debug_mode", False))
         if self._debug_mode:
-            logger.info("═══════════ [BiliVideo] Debug 模式已启用 ═══════════")
+            logger.info("═══════════ [BiliBrief] Debug 模式已启用 ═══════════")
 
-        self._log("══════ [BiliVideo] 插件初始化开始 ══════")
+        self._log("══════ [BiliBrief] 插件初始化开始 ══════")
         self._log(f"配置内容: { {k: v for k, v in self.config.items() if k not in ('cookies',)} }")
 
         # B站扫码登录服务
@@ -67,7 +67,7 @@ class BiliVideoPlugin(Star):
             app_secret=str(self.config.get("feishu_app_secret", "")),
             space_id=str(self.config.get("feishu_wiki_space_id", "")),
             parent_node_token=str(self.config.get("feishu_parent_node_token", "")),
-            title_prefix=str(self.config.get("feishu_title_prefix", "biliVideo总结")),
+            title_prefix=str(self.config.get("feishu_title_prefix", "BiliBrief纪要")),
             domain=str(self.config.get("feishu_domain", "feishu")),
         )
         self._last_feishu_publish_result = {}
@@ -87,19 +87,19 @@ class BiliVideoPlugin(Star):
         else:
             self._log("定时推送已禁用")
 
-        self._log("══════ [BiliVideo] 插件初始化完成 ══════")
+        self._log("══════ [BiliBrief] 插件初始化完成 ══════")
 
         if self.bili_login.is_logged_in():
-            logger.info("BiliVideo 插件已加载（B站已登录）")
+            logger.info("BiliBrief 插件已加载（B站已登录）")
         else:
-            logger.info("BiliVideo 插件已加载（B站未登录，请发送 /B站登录 扫码）")
+            logger.info("BiliBrief 插件已加载（B站未登录，请发送 /B站登录 扫码）")
 
     # ==================== 工具方法 ====================
 
     def _log(self, msg: str):
         """Debug 日志输出 —— 使用 logger.info 确保始终可见"""
         if self._debug_mode:
-            logger.info(f"[BiliVideo/DBG] {msg}")
+            logger.info(f"[BiliBrief/DBG] {msg}")
 
     def _load_push_targets_from_config(self):
         """从配置文件加载推送目标到 SubscriptionManager"""
@@ -271,12 +271,12 @@ class BiliVideoPlugin(Star):
 
     # ==================== 命令处理 ====================
 
-    @filter.command("总结帮助", alias={"BiliVideo help", "总结help", "总结帮助"})
+    @filter.command("总结帮助", alias={"BiliBrief help", "总结help", "总结帮助"})
     async def show_help(self, event: AstrMessageEvent):
         """显示插件帮助信息"""
         login_status = "✅ 已登录" if self.bili_login.is_logged_in() else "❌ 未登录"
         help_text = (
-            "📝 biliVideo 视频总结助手 v1.0.0\n"
+            "📝 BiliBrief 视频纪要助手 v1.0.1\n"
             "━━━━━━━━━━━━━━━━━━━\n"
             f"🔐 B站登录状态: {login_status}\n"
             "\n"
@@ -410,7 +410,7 @@ class BiliVideoPlugin(Star):
         self.bili_cookies = {}
         yield event.plain_result("✅ 已退出B站登录")
 
-    @filter.command("总结", alias={"BiliVideo", "视频总结", "总结"})
+    @filter.command("总结", alias={"BiliBrief", "视频总结", "总结"})
     async def generate_note_cmd(self, event: AstrMessageEvent):
         """手动为视频生成总结"""
         self._log("═══════ [总结命令] 开始处理 ═══════")
@@ -964,7 +964,7 @@ class BiliVideoPlugin(Star):
 
             response = await provider.text_chat(
                 prompt=prompt,
-                session_id="BiliVideo_plugin",
+                session_id="BiliBrief_plugin",
             )
             self._log(f"[AskLLM] response type={type(response).__name__}")
 
@@ -1079,4 +1079,4 @@ class BiliVideoPlugin(Star):
             except asyncio.CancelledError:
                 pass
 
-        logger.info("BiliVideo 视频总结插件已卸载")
+        logger.info("BiliBrief 视频纪要插件已卸载")
