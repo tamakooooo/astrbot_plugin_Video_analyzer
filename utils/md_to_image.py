@@ -2,7 +2,6 @@ import base64
 import logging
 import os
 import re
-from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +15,7 @@ _FONT_MAP = {
     "JetBrainsMono-Thin.ttf": ("JetBrains Mono", "100"),
 }
 
-_font_face_cache: Optional[str] = None
+_font_face_cache: str | None = None
 
 
 def _build_font_faces() -> str:
@@ -48,19 +47,19 @@ def _build_font_faces() -> str:
 
 # 卡片左边框的颜色循环 (蓝、绿、紫、橙、青、粉)
 CARD_COLORS = [
-    ('#60a5fa', 'rgba(96,165,250,.10)'),   # 蓝
-    ('#34d399', 'rgba(52,211,153,.10)'),    # 绿
-    ('#a78bfa', 'rgba(167,139,250,.10)'),   # 紫
-    ('#fb923c', 'rgba(251,146,60,.10)'),    # 橙
-    ('#22d3ee', 'rgba(34,211,238,.10)'),    # 青
-    ('#f472b6', 'rgba(244,114,182,.10)'),   # 粉
+    ("#60a5fa", "rgba(96,165,250,.10)"),  # 蓝
+    ("#34d399", "rgba(52,211,153,.10)"),  # 绿
+    ("#a78bfa", "rgba(167,139,250,.10)"),  # 紫
+    ("#fb923c", "rgba(251,146,60,.10)"),  # 橙
+    ("#22d3ee", "rgba(34,211,238,.10)"),  # 青
+    ("#f472b6", "rgba(244,114,182,.10)"),  # 粉
 ]
 
 
 def _get_logo_base64() -> str:
     if os.path.exists(_LOGO_PATH):
         try:
-            with open(_LOGO_PATH, 'rb') as f:
+            with open(_LOGO_PATH, "rb") as f:
                 return f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
         except Exception:
             pass
@@ -70,7 +69,7 @@ def _get_logo_base64() -> str:
 def _wrap_sections_in_cards(html: str) -> str:
     """将 HTML 按 h2 标题拆分为独立卡片，每个卡片使用不同的左边框颜色"""
     # 按 h2 拆分
-    parts = re.split(r'(<h2[^>]*>.*?</h2>)', html, flags=re.DOTALL | re.IGNORECASE)
+    parts = re.split(r"(<h2[^>]*>.*?</h2>)", html, flags=re.DOTALL | re.IGNORECASE)
 
     if len(parts) <= 1:
         # 没有 h2 标题，整体作为一个卡片
@@ -87,32 +86,32 @@ def _wrap_sections_in_cards(html: str) -> str:
     # 组合 h2 标题 + 后续内容
     i = 1
     while i < len(parts):
-        h2_tag = parts[i] if i < len(parts) else ''
-        content = parts[i + 1] if i + 1 < len(parts) else ''
+        h2_tag = parts[i] if i < len(parts) else ""
+        content = parts[i + 1] if i + 1 < len(parts) else ""
         color_idx = card_idx % len(CARD_COLORS)
         border_color, bg_color = CARD_COLORS[color_idx]
 
         result.append(
             f'<div class="card card-{color_idx}" '
             f'style="border-left-color:{border_color};background:{bg_color}">'
-            f'{h2_tag}{content}</div>'
+            f"{h2_tag}{content}</div>"
         )
         card_idx += 1
         i += 2
 
-    return '\n'.join(result)
+    return "\n".join(result)
 
 
 def _build_full_html(
     body_html: str,
     logo_uri: str,
-    title_text: str = '',
-    footer_time: str = '',
+    title_text: str = "",
+    footer_time: str = "",
     page_width: int = 1400,
 ) -> str:
     font_faces = _build_font_faces()
 
-    return f'''<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
 {font_faces}
@@ -277,50 +276,50 @@ tr:nth-child(even) td{{background:rgba(148,163,184,.03)}}
   <div class="ftxt">Powered by <span class="br">BiliBrief+</span> · AI 视频纪要助手</div>
   <div class="ftime">{footer_time}</div>
 </div>
-</body></html>'''
+</body></html>"""
 
 
 def _highlight_timestamps(html: str) -> str:
-    html = re.sub(r'⏱\s*(\d{1,2}:\d{2})', r'<span class="ts">⏱ \1</span>', html)
-    html = re.sub(r'\[(\d{1,2}:\d{2})\]', r'<span class="ts">⏱ \1</span>', html)
+    html = re.sub(r"⏱\s*(\d{1,2}:\d{2})", r'<span class="ts">⏱ \1</span>', html)
+    html = re.sub(r"\[(\d{1,2}:\d{2})\]", r'<span class="ts">⏱ \1</span>', html)
     # 移除 h2 后紧跟的重复独立时间戳段落
     html = re.sub(
-        r'(</h2>\s*)'                         # h2 结束标签
+        r"(</h2>\s*)"  # h2 结束标签
         r'<p>\s*<span class="ts">[^<]*</span>\s*\*?\s*</p>',  # 独立时间戳段落
-        r'\1',
-        html
+        r"\1",
+        html,
     )
     return html
 
 
 def _extract_title(html: str) -> tuple:
     """提取 h1 标题文本，并从 body 中移除。格式化为 '标题 —— 作者'"""
-    m = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
+    m = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL | re.IGNORECASE)
     if m:
-        title_text = re.sub(r'<[^>]+>', '', m.group(1)).strip()
-        html = html[:m.start()] + html[m.end():]
+        title_text = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        html = html[: m.start()] + html[m.end() :]
         # 移除紧跟 h1 后面的重复标题段落（LLM 有时会输出两次）
-        clean_title = re.sub(r'[📑📝🎬🎥\s]', '', title_text)
+        clean_title = re.sub(r"[📑📝🎬🎥\s]", "", title_text)
         if clean_title:
             # 匹配包含相同标题文字的 <p> 段落
-            dup_pattern = r'<p[^>]*>[^<]*' + re.escape(clean_title[:20]) + r'[^<]*</p>'
-            html = re.sub(dup_pattern, '', html, count=1)
+            dup_pattern = r"<p[^>]*>[^<]*" + re.escape(clean_title[:20]) + r"[^<]*</p>"
+            html = re.sub(dup_pattern, "", html, count=1)
         # 将 " - 作者" 格式化为 " —— 作者"
-        if ' - ' in title_text:
-            parts = title_text.rsplit(' - ', 1)
+        if " - " in title_text:
+            parts = title_text.rsplit(" - ", 1)
             title_text = f"{parts[0]} —— {parts[1]}"
         return title_text, html
-    return 'AI 视频总结', html
+    return "AI 视频总结", html
 
 
 def render_note_image(
     markdown_text: str,
     output_path: str,
-    width: int = 1400,
-) -> Optional[str]:
+    width: int = 1600,
+) -> str | None:
     try:
-        import markdown as md
         import imgkit
+        import markdown as md
     except ImportError as e:
         logger.error(f"缺少依赖: {e}. 请安装: pip install markdown imgkit")
         return None
@@ -328,11 +327,12 @@ def render_note_image(
     try:
         import time as _time
         from datetime import datetime
+
         render_start = _time.time()
 
         html_body = md.markdown(
             markdown_text,
-            extensions=['tables', 'fenced_code', 'nl2br'],
+            extensions=["tables", "fenced_code", "nl2br"],
         )
         html_body = _highlight_timestamps(html_body)
 
@@ -344,7 +344,7 @@ def render_note_image(
 
         logo_uri = _get_logo_base64()
 
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         footer_time = f"{now_str}"
 
         full_html = _build_full_html(
@@ -355,22 +355,39 @@ def render_note_image(
             page_width=width,
         )
 
-        options = {
-            'format': 'jpg',
-            'width': str(width),
-            'encoding': 'UTF-8',
-            'quality': '82',
-            'enable-local-file-access': '',
-            'no-stop-slow-scripts': '',
-            'disable-smart-width': '',
-        }
-
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        imgkit.from_string(full_html, output_path, options=options)
+
+        max_output_bytes = 9 * 1024 * 1024
+        render_profiles = [
+            {"quality": "92", "zoom": "1.25", "image_dpi": "220"},
+            {"quality": "88", "zoom": "1.15", "image_dpi": "180"},
+            {"quality": "84", "zoom": "1.05", "image_dpi": "144"},
+            {"quality": "80", "zoom": "1.00", "image_dpi": "120"},
+        ]
+
+        for profile in render_profiles:
+            options = {
+                "format": "jpg",
+                "width": str(width),
+                "encoding": "UTF-8",
+                "quality": profile["quality"],
+                "zoom": profile["zoom"],
+                "image-dpi": profile["image_dpi"],
+                "enable-local-file-access": "",
+                "no-stop-slow-scripts": "",
+                "disable-smart-width": "",
+            }
+            imgkit.from_string(full_html, output_path, options=options)
+            if not os.path.exists(output_path):
+                continue
+            if os.path.getsize(output_path) <= max_output_bytes:
+                break
 
         if os.path.exists(output_path):
             render_secs = round(_time.time() - render_start, 1)
-            logger.info(f"总结图片已生成: {output_path} ({os.path.getsize(output_path)} bytes, 渲染{render_secs}s)")
+            logger.info(
+                f"总结图片已生成: {output_path} ({os.path.getsize(output_path)} bytes, 渲染{render_secs}s)"
+            )
             return output_path
         else:
             logger.error("imgkit 未生成文件")

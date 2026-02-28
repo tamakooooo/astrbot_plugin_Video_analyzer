@@ -353,6 +353,10 @@ class FeishuWikiPusher:
     ) -> tuple[list[dict], dict[str, dict[str, str]]]:
         blocks: list[dict] = []
         image_tasks: dict[str, dict[str, str]] = {}
+        screenshot_insert_map = self._build_screenshot_insert_map(
+            note_text=note_text, screenshot_paths=screenshot_paths or []
+        )
+        screenshot_global_idx = 0
 
         if video_url:
             blocks.append(self._text_block(f"原视频链接：{video_url}"))
@@ -436,6 +440,16 @@ class FeishuWikiPusher:
                 text = heading.group(2).strip()
                 if text:
                     blocks.append(self._heading_block(level, text))
+                    bound_paths = screenshot_insert_map.get(screenshot_global_idx, [])
+                    if bound_paths:
+                        for local_path in bound_paths:
+                            p = Path(local_path)
+                            if not p.exists() or not p.is_file():
+                                continue
+                            temp_id = f"simg_{uuid.uuid4().hex[:12]}"
+                            blocks.append(self._image_block(temp_id))
+                            image_tasks[temp_id] = {"type": "local", "value": str(p)}
+                    screenshot_global_idx += 1
                 continue
 
             # 分割线
@@ -488,19 +502,55 @@ class FeishuWikiPusher:
             if expr:
                 blocks.append(self._equation_block(expr))
 
-        screenshot_paths = screenshot_paths or []
-        if screenshot_paths:
-            blocks.append(self._heading_block(2, "视频截图"))
-            for idx, screenshot_path in enumerate(screenshot_paths, start=1):
-                p = Path(str(screenshot_path))
-                if not p.exists() or not p.is_file():
-                    continue
-                temp_id = f"simg_{uuid.uuid4().hex[:12]}"
-                blocks.append(self._image_block(temp_id))
-                image_tasks[temp_id] = {"type": "local", "value": str(p)}
-                blocks.append(self._text_block(f"截图 {idx}"))
+        # 没有可插入标题时兜底追加到文末
+        consumed_paths = {
+            item for group in screenshot_insert_map.values() for item in group
+        }
+        remaining_paths = [p for p in (screenshot_paths or []) if p not in consumed_paths]
+        for screenshot_path in remaining_paths:
+            p = Path(str(screenshot_path))
+            if not p.exists() or not p.is_file():
+                continue
+            temp_id = f"simg_{uuid.uuid4().hex[:12]}"
+            blocks.append(self._image_block(temp_id))
+            image_tasks[temp_id] = {"type": "local", "value": str(p)}
 
         return blocks, image_tasks
+
+    @staticmethod
+    def _build_screenshot_insert_map(
+        note_text: str, screenshot_paths: list[str]
+    ) -> dict[int, list[str]]:
+        if not screenshot_paths:
+            return {}
+        lines = note_text.splitlines()
+        heading_indexes: list[int] = []
+        heading_seen = 0
+        for raw in lines:
+            stripped = raw.strip()
+            heading = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+            if not heading:
+                continue
+            level = len(heading.group(1))
+            if level >= 2:
+                heading_indexes.append(heading_seen)
+            heading_seen += 1
+
+        if not heading_indexes:
+            return {}
+
+        mapping: dict[int, list[str]] = {idx: [] for idx in heading_indexes}
+        if len(heading_indexes) == 1:
+            mapping[heading_indexes[0]] = list(screenshot_paths)
+            return mapping
+
+        n = len(screenshot_paths)
+        m = len(heading_indexes)
+        for i, path in enumerate(screenshot_paths):
+            pos = round(i * (m - 1) / max(1, n - 1))
+            heading_idx = heading_indexes[pos]
+            mapping.setdefault(heading_idx, []).append(path)
+        return mapping
 
     @staticmethod
     def _split_text(text: str, max_len: int = 900) -> list[str]:
