@@ -179,7 +179,22 @@ class BiliVideoPlugin(Star):
         """
         if not self.config.get("output_image", True):
             self._log("[Render] output_image=False, 使用纯文本")
-            return note_text
+            return note_text or "❌ 总结为空"
+
+        # 生成唯一文件名
+        import time
+        img_filename = f"note_{int(time.time() * 1000)}.png"
+        img_path = os.path.join(self.data_dir, "images", img_filename)
+
+        self._log(f"[Render] 开始渲染图片: {img_path}")
+        result = render_note_image(note_text, img_path)
+
+        if result and os.path.exists(result):
+            self._log(f"[Render] 图片渲染成功: {os.path.getsize(result)} bytes")
+            return [Image.fromFileSystem(result)]
+        else:
+            self._log("[Render] 图片渲染失败, 回退到纯文本")
+            return note_text or "❌ 总结为空"
 
     async def _try_push_note_to_feishu(self, note_text: str, video_url: str, source: str):
         """
@@ -221,21 +236,6 @@ class BiliVideoPlugin(Star):
         else:
             logger.warning(f"[FeishuPush] 推送失败: {message}")
         return result
-
-        # 生成唯一文件名
-        import time
-        img_filename = f"note_{int(time.time() * 1000)}.png"
-        img_path = os.path.join(self.data_dir, "images", img_filename)
-
-        self._log(f"[Render] 开始渲染图片: {img_path}")
-        result = render_note_image(note_text, img_path)
-
-        if result and os.path.exists(result):
-            self._log(f"[Render] 图片渲染成功: {os.path.getsize(result)} bytes")
-            return [Image.fromFileSystem(result)]
-        else:
-            self._log("[Render] 图片渲染失败, 回退到纯文本")
-            return note_text
 
     # ==================== 命令处理 ====================
 
