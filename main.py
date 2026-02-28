@@ -171,6 +171,38 @@ class BiliVideoPlugin(Star):
         parts = str(message_str).strip().split(maxsplit=1)
         return parts[1].strip() if len(parts) > 1 else ""
 
+    @staticmethod
+    def _extract_clean_bilibili_url(text: str) -> str:
+        """
+        从输入文本中提取并清洗 B站 URL。
+        兼容 Markdown 链接: [title](https://www.bilibili.com/video/xxx)
+        """
+        if not text:
+            return ""
+        import re
+
+        raw = str(text).strip().strip("<>").strip()
+
+        # Markdown 链接
+        md_link = re.search(r"\[[^\]]+]\((https?://[^\s)]+)\)", raw)
+        if md_link:
+            return md_link.group(1).strip()
+
+        # 直接链接（B站长链 / b23短链）
+        direct = re.search(
+            r"https?://(?:www\.)?(?:bilibili\.com/video/[^\s)>]+|b23\.tv/[^\s)>]+)",
+            raw
+        )
+        if direct:
+            return direct.group(0).strip()
+
+        # 纯 BV 号
+        bv = re.search(r"(BV[0-9A-Za-z]{10})", raw)
+        if bv:
+            return f"https://www.bilibili.com/video/{bv.group(1)}"
+
+        return raw
+
     def _render_and_get_chain(self, note_text: str):
         """
         将总结渲染为图片并返回消息链组件，或回退到纯文本。
@@ -424,11 +456,10 @@ class BiliVideoPlugin(Star):
         args = self._parse_args(raw_msg)
         self._log(f"[总结命令] 方式1 _parse_args 结果: '{args}'")
         if args:
-            # 尝试直接取第一个参数作为URL
-            first_arg = args.split()[0]
-            self._log(f"[总结命令] 方式1 第一个参数: '{first_arg}'")
-            if 'bilibili.com' in first_arg or 'b23.tv' in first_arg:
-                video_url = first_arg
+            candidate = self._extract_clean_bilibili_url(args)
+            self._log(f"[总结命令] 方式1 清洗后参数: '{candidate}'")
+            if detect_platform(candidate) == "bilibili":
+                video_url = candidate
                 self._log(f"[总结命令] 方式1 命中URL: '{video_url}'")
 
         # 方式2: 用正则从 raw_msg 中找 bilibili URL
@@ -484,7 +515,7 @@ class BiliVideoPlugin(Star):
             )
             return
 
-        video_url = video_url.rstrip('>')
+        video_url = self._extract_clean_bilibili_url(video_url).rstrip('>')
         platform = detect_platform(video_url)
         self._log(f"[总结命令] 最终URL='{video_url}', platform='{platform}'")
         if platform != "bilibili":
