@@ -496,6 +496,8 @@ class BiliVideoPlugin(Star):
 
         self._log(f"[总结命令] 调用 _generate_note: {video_url}")
         note = await self._generate_note(video_url)
+        if not isinstance(note, str) or not note.strip():
+            note = "❌ 总结生成结果为空"
         self._log(f"[总结命令] 总结生成完成, 长度={len(note) if note else 0}")
         feishu_result = await self._try_push_note_to_feishu(note, video_url, source="manual")
 
@@ -506,7 +508,8 @@ class BiliVideoPlugin(Star):
         if isinstance(result, list):
             yield event.chain_result(result)
         else:
-            yield event.plain_result(result)
+            safe_text = result if isinstance(result, str) and result else "❌ 总结发送内容为空"
+            yield event.plain_result(safe_text)
         if feishu_result.get("attempted"):
             if feishu_result.get("success"):
                 doc_url = (feishu_result.get("detail") or {}).get("doc_url", "")
@@ -558,12 +561,15 @@ class BiliVideoPlugin(Star):
         )
 
         note = await self._generate_note(video_url)
+        if not isinstance(note, str) or not note.strip():
+            note = "❌ 总结生成结果为空"
         feishu_result = await self._try_push_note_to_feishu(note, video_url, source="manual")
         result = self._render_and_get_chain(note)
         if isinstance(result, list):
             yield event.chain_result(result)
         else:
-            yield event.plain_result(result)
+            safe_text = result if isinstance(result, str) and result else "❌ 总结发送内容为空"
+            yield event.plain_result(safe_text)
         if feishu_result.get("attempted") and feishu_result.get("success"):
             doc_url = (feishu_result.get("detail") or {}).get("doc_url", "")
             if doc_url:
@@ -728,12 +734,15 @@ class BiliVideoPlugin(Star):
 
                 video_url = f"https://www.bilibili.com/video/{latest_bvid}"
                 note = await self._generate_note(video_url)
+                if not isinstance(note, str) or not note.strip():
+                    note = "❌ 总结生成结果为空"
                 feishu_result = await self._try_push_note_to_feishu(note, video_url, source="manual")
                 result = self._render_and_get_chain(note)
                 if isinstance(result, list):
                     yield event.chain_result(result)
                 else:
-                    yield event.plain_result(result)
+                    safe_text = result if isinstance(result, str) and result else "❌ 总结发送内容为空"
+                    yield event.plain_result(safe_text)
                 if feishu_result.get("attempted") and feishu_result.get("success"):
                     doc_url = (feishu_result.get("detail") or {}).get("doc_url", "")
                     if doc_url:
