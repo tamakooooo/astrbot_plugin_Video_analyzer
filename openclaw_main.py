@@ -7,13 +7,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 import requests
 
 from astrbot.api import logger
+from services.bilibili_login import BilibiliLogin
 from services.feishu_wiki import FeishuWikiPusher
 from services.note_service import NoteService
 from utils.md_to_image import render_note_image
@@ -23,6 +26,8 @@ from utils.url_parser import detect_platform
 SKILL_DIR = Path(__file__).resolve().parent
 DATA_DIR = SKILL_DIR / "data"
 IMAGES_DIR = DATA_DIR / "images"
+LOGIN_DIR = DATA_DIR / "douyin_login_sessions"
+BILI_LOGIN_DIR = DATA_DIR / "bilibili_login_sessions"
 
 
 def _load_config(config_path: str | None) -> dict[str, Any]:
@@ -37,6 +42,19 @@ def _load_config(config_path: str | None) -> dict[str, Any]:
             except Exception as e:
                 logger.warning(f"读取配置失败: {e}")
     return config
+
+
+def _resolve_config_path(config_path: str | None) -> Path:
+    p = Path(config_path or "./config.json")
+    if not p.is_absolute():
+        p = (SKILL_DIR / p).resolve()
+    return p
+
+
+def _save_config(config_path: str | None, config: dict[str, Any]):
+    p = _resolve_config_path(config_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _build_llm_caller(config: dict[str, Any]):
@@ -119,6 +137,288 @@ def _build_runtime_config(
     return config
 
 
+def _start_douyin_login(config_path: str | None, timeout_seconds: int = 180) -> dict[str, Any]:
+    LOGIN_DIR.mkdir(parents=True, exist_ok=True)
+    session_id = uuid.uuid4().hex
+    session_file = LOGIN_DIR / f"{session_id}.json"
+    worker = SKILL_DIR / "services" / "douyin_login_worker.py"
+    python_bin = os.environ.get("VIDEO_ANALYZER_PYTHON_BIN", "python3")
+    cmd = [
+        python_bin,
+        str(worker),
+        "--session-id",
+        session_id,
+        "--session-file",
+        str(session_file),
+        "--data-dir",
+        str(LOGIN_DIR),
+        "--timeout",
+        str(int(timeout_seconds)),
+        "--headless",
+    ]
+    subprocess.Popen(
+        cmd,
+        cwd=str(SKILL_DIR),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    # 等待二维码生成（最多 25 秒）
+    for _ in range(25):
+        if session_file.exists():
+            try:
+                payload = json.loads(session_file.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {}
+            status = payload.get("status")
+            if status in {"qrcode_ready", "error"}:
+                break
+        time.sleep(1)
+
+    if not session_file.exists():
+        return {
+            "status": "failed",
+            "completed": True,
+            "success": False,
+            "error": "登录 worker 启动超时",
+        }
+
+    payload = json.loads(session_file.read_text(encoding="utf-8"))
+    if payload.get("status") == "error":
+        return {
+            "status": "failed",
+            "completed": True,
+            "success": False,
+            "action": "douyin_login_start",
+            "session_id": session_id,
+            "error": str(payload.get("message") or "生成二维码失败"),
+        }
+
+    return {
+        "status": "qrcode_ready",
+        "completed": True,
+        "success": True,
+        "action": "douyin_login_start",
+        "session_id": session_id,
+        "qr_path": str(payload.get("qr_path") or ""),
+        "debug_path": str(payload.get("debug_path") or ""),
+        "page_url": str(payload.get("page_url") or ""),
+        "page_title": str(payload.get("page_title") or ""),
+        "qr_mode": str(payload.get("qr_mode") or ""),
+        "message": "请将 qr_path 对应图片发给用户扫码，然后调用 douyin_login_poll",
+    }
+
+
+def _poll_douyin_login(session_id: str, config_path: str | None) -> dict[str, Any]:
+    session_file = LOGIN_DIR / f"{session_id}.json"
+    if not session_file.exists():
+        return {
+            "status": "failed",
+            "completed": True,
+            "success": False,
+            "action": "douyin_login_poll",
+            "session_id": session_id,
+            "error": "session 不存在或已失效",
+        }
+
+    try:
+        payload = json.loads(session_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {
+            "status": "failed",
+            "completed": True,
+            "success": False,
+            "action": "douyin_login_poll",
+            "session_id": session_id,
+            "error": f"session 读取失败: {e}",
+        }
+
+    status = str(payload.get("status") or "")
+    if status == "success":
+        cookies = payload.get("cookies") or {}
+        config = _load_config(config_path)
+        config["douyin_cookie_ttwid"] = str(cookies.get("ttwid") or "")
+        config["douyin_cookie_odin_tt"] = str(cookies.get("odin_tt") or "")
+        config["douyin_cookie_ms_token"] = str(cookies.get("msToken") or "")
+        config["douyin_cookie_passport_csrf_token"] = str(cookies.get("passport_csrf_token") or "")
+        config["douyin_cookie_sid_guard"] = str(cookies.get("sid_guard") or "")
+        if not config.get("douyin_downloader_runner_path") and os.path.exists("/opt/douyin-downloader/run.py"):
+            config["douyin_downloader_runner_path"] = "/opt/douyin-downloader/run.py"
+        if not config.get("douyin_downloader_python") and os.path.exists("/mnt/AstrBot/.venv/bin/python"):
+            config["douyin_downloader_python"] = "/mnt/AstrBot/.venv/bin/python"
+        _save_config(config_path, config)
+        return {
+            "status": "completed",
+            "completed": True,
+            "success": True,
+            "action": "douyin_login_poll",
+            "session_id": session_id,
+            "login_status": "success",
+            "message": "抖音登录成功，Cookie 已写入配置",
+        }
+
+    if status in {"timeout", "error"}:
+        return {
+            "status": "completed",
+            "completed": True,
+            "success": False,
+            "action": "douyin_login_poll",
+            "session_id": session_id,
+            "login_status": status,
+            "error": str(payload.get("message") or "登录失败"),
+            "qr_path": str(payload.get("qr_path") or ""),
+            "debug_path": str(payload.get("debug_path") or ""),
+        }
+
+    return {
+        "status": "waiting",
+        "completed": True,
+        "success": True,
+        "action": "douyin_login_poll",
+        "session_id": session_id,
+        "login_status": status or "waiting",
+        "message": str(payload.get("message") or "等待扫码确认"),
+        "qr_path": str(payload.get("qr_path") or ""),
+        "debug_path": str(payload.get("debug_path") or ""),
+    }
+
+
+def _start_bilibili_login() -> dict[str, Any]:
+    import segno
+
+    BILI_LOGIN_DIR.mkdir(parents=True, exist_ok=True)
+    session_id = uuid.uuid4().hex
+    session_file = BILI_LOGIN_DIR / f"{session_id}.json"
+
+    async def _gen():
+        bili = BilibiliLogin(str(DATA_DIR))
+        return await bili.generate_qrcode()
+
+    qr_data = asyncio.run(_gen())
+    if not qr_data:
+        return {
+            "status": "failed",
+            "completed": True,
+            "success": False,
+            "action": "bili_login_start",
+            "error": "B站二维码生成失败",
+        }
+
+    qrcode_url = str(qr_data.get("url") or "")
+    qrcode_key = str(qr_data.get("qrcode_key") or "")
+    if not qrcode_url or not qrcode_key:
+        return {
+            "status": "failed",
+            "completed": True,
+            "success": False,
+            "action": "bili_login_start",
+            "error": "B站二维码数据不完整",
+        }
+
+    qr_path = BILI_LOGIN_DIR / f"bili_login_qr_{session_id}.png"
+    segno.make(qrcode_url).save(str(qr_path), scale=10)
+    payload = {
+        "session_id": session_id,
+        "status": "qrcode_ready",
+        "qrcode_key": qrcode_key,
+        "qrcode_url": qrcode_url,
+        "qr_path": str(qr_path),
+        "created_at": int(time.time()),
+        "updated_at": int(time.time()),
+    }
+    session_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {
+        "status": "qrcode_ready",
+        "completed": True,
+        "success": True,
+        "action": "bili_login_start",
+        "session_id": session_id,
+        "qr_path": str(qr_path),
+        "qrcode_url": qrcode_url,
+        "message": "请将 qr_path 对应图片发给用户扫码，然后调用 bili_login_poll",
+    }
+
+
+def _poll_bilibili_login(session_id: str) -> dict[str, Any]:
+    session_file = BILI_LOGIN_DIR / f"{session_id}.json"
+    if not session_file.exists():
+        return {
+            "status": "failed",
+            "completed": True,
+            "success": False,
+            "action": "bili_login_poll",
+            "session_id": session_id,
+            "error": "session 不存在或已失效",
+        }
+
+    try:
+        payload = json.loads(session_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {
+            "status": "failed",
+            "completed": True,
+            "success": False,
+            "action": "bili_login_poll",
+            "session_id": session_id,
+            "error": f"session 读取失败: {e}",
+        }
+
+    qrcode_key = str(payload.get("qrcode_key") or "")
+    if not qrcode_key:
+        return {
+            "status": "failed",
+            "completed": True,
+            "success": False,
+            "action": "bili_login_poll",
+            "session_id": session_id,
+            "error": "qrcode_key 丢失",
+        }
+
+    async def _poll():
+        bili = BilibiliLogin(str(DATA_DIR))
+        return await bili.poll_login(qrcode_key)
+
+    result = asyncio.run(_poll())
+    status = str(result.get("status") or "")
+    payload["status"] = status
+    payload["updated_at"] = int(time.time())
+    session_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if status == "success":
+        return {
+            "status": "completed",
+            "completed": True,
+            "success": True,
+            "action": "bili_login_poll",
+            "session_id": session_id,
+            "login_status": "success",
+            "message": "B站登录成功，Cookie 已写入 data/bili_cookies.json",
+            "qr_path": str(payload.get("qr_path") or ""),
+        }
+    if status in {"expired", "error"}:
+        return {
+            "status": "completed",
+            "completed": True,
+            "success": False,
+            "action": "bili_login_poll",
+            "session_id": session_id,
+            "login_status": status,
+            "error": "二维码已过期，请重新获取" if status == "expired" else "登录失败",
+            "qr_path": str(payload.get("qr_path") or ""),
+        }
+    return {
+        "status": "waiting",
+        "completed": True,
+        "success": True,
+        "action": "bili_login_poll",
+        "session_id": session_id,
+        "login_status": status or "waiting",
+        "message": "等待扫码确认",
+        "qr_path": str(payload.get("qr_path") or ""),
+    }
+
+
 async def _run_async(
     *,
     url: str,
@@ -132,7 +432,7 @@ async def _run_async(
 
     note_service = NoteService(
         data_dir=str(DATA_DIR),
-        cookies=None,
+        cookies=BilibiliLogin(str(DATA_DIR)).get_cookies() or None,
         config=config,
     )
 
@@ -215,7 +515,10 @@ async def _run_async(
 
 
 def skill_main(
-    url: str,
+    action: str = "summarize",
+    url: str = "",
+    session_id: str | None = None,
+    login_timeout_seconds: int = 180,
     config_path: str | None = "./config.json",
     output_image: bool = True,
     note_style: str = "professional",
@@ -228,6 +531,31 @@ def skill_main(
     douyin_downloader_runner_path: str | None = None,
     douyin_downloader_python: str | None = None,
 ) -> dict[str, Any]:
+    if action == "douyin_login_start":
+        return _start_douyin_login(config_path=config_path, timeout_seconds=login_timeout_seconds)
+    if action == "douyin_login_poll":
+        sid = str(session_id or "").strip()
+        if not sid:
+            return {
+                "status": "failed",
+                "completed": True,
+                "success": False,
+                "error": "action=douyin_login_poll 时必须提供 session_id",
+            }
+        return _poll_douyin_login(session_id=sid, config_path=config_path)
+    if action == "bili_login_start":
+        return _start_bilibili_login()
+    if action == "bili_login_poll":
+        sid = str(session_id or "").strip()
+        if not sid:
+            return {
+                "status": "failed",
+                "completed": True,
+                "success": False,
+                "error": "action=bili_login_poll 时必须提供 session_id",
+            }
+        return _poll_bilibili_login(session_id=sid)
+
     if not str(url or "").strip():
         return {
             "status": "failed",
@@ -278,4 +606,3 @@ def skill_main(
             "error": str(e),
             "url": url,
         }
-

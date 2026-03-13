@@ -18,7 +18,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Analyze Bilibili/Douyin video and optionally publish to Feishu wiki."
     )
-    parser.add_argument("--url", required=True, help="视频链接（支持 B站/抖音）")
+    parser.add_argument(
+        "--action",
+        default="summarize",
+        choices=[
+            "summarize",
+            "douyin_login_start",
+            "douyin_login_poll",
+            "bili_login_start",
+            "bili_login_poll",
+        ],
+        help="执行动作：总结 / 抖音登录开始 / 抖音登录轮询",
+    )
+    parser.add_argument("--url", default="", help="视频链接（action=summarize 时必填）")
+    parser.add_argument("--session-id", default="", help="action=douyin_login_poll 时必填")
+    parser.add_argument("--login-timeout-seconds", type=int, default=180, help="抖音扫码超时秒数")
     parser.add_argument("--config", default="./config.json", help="配置文件路径")
     parser.add_argument(
         "--note-style",
@@ -51,7 +65,10 @@ def main() -> int:
     args = parser.parse_args()
 
     result = skill_main(
+        action=args.action,
         url=args.url,
+        session_id=args.session_id or None,
+        login_timeout_seconds=args.login_timeout_seconds,
         config_path=args.config,
         output_image=not args.no_output_image,
         note_style=args.note_style,
@@ -70,4 +87,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

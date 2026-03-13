@@ -19,10 +19,28 @@ capabilities:
   - note_image_render
 
 parameters:
+  action:
+    type: choice
+    required: false
+    default: summarize
+    options: [summarize, douyin_login_start, douyin_login_poll, bili_login_start, bili_login_poll]
+    description: 执行动作（默认 summarize）
+
   url:
     type: string
-    required: true
-    description: 视频链接（支持 B站/抖音）
+    required: false
+    description: 视频链接（action=summarize 时必填）
+
+  session_id:
+    type: string
+    required: false
+    description: 抖音登录会话 ID（action=douyin_login_poll 时必填）
+
+  login_timeout_seconds:
+    type: integer
+    required: false
+    default: 180
+    description: 抖音扫码超时时间
 
   config_path:
     type: string
@@ -88,12 +106,20 @@ output:
     - status
     - completed
     - success
-    - note_text
-    - feishu_publish
+    - action
   schema:
     status: string
     completed: boolean
     success: boolean
+    action: string
+    session_id: string
+    qr_path: string
+    debug_path: string
+    page_url: string
+    page_title: string
+    qr_mode: string
+    login_status: string
+    message: string
     platform: string
     url: string
     processing_seconds: number
@@ -108,4 +134,3 @@ output:
       message: string
       detail: object
     error: string
-
